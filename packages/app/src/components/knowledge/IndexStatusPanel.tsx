@@ -34,6 +34,29 @@ export const IndexStatusPanel = React.memo(function IndexStatusPanel() {
     loadStats()
   }, [loadStats])
 
+  // Listen for knowledge index changes from file watcher
+  React.useEffect(() => {
+    if (!isTauri()) return
+
+    let unlisten: (() => void) | undefined
+
+    const setupListener = async () => {
+      const { listen } = await import('@tauri-apps/api/event')
+      unlisten = await listen('knowledge-index-changed', () => {
+        console.log('[IndexStatusPanel] Knowledge index changed, refreshing status')
+        loadStats()
+      })
+    }
+
+    setupListener()
+
+    return () => {
+      if (unlisten) {
+        unlisten()
+      }
+    }
+  }, [loadStats])
+
   if (!indexStatus) {
     return (
       <div className="flex items-center justify-center py-8">

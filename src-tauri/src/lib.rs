@@ -9,6 +9,23 @@ mod stt;
 mod rag;
 mod telemetry;
 
+/// Initialize tracing subscriber for logging
+fn init_tracing() {
+    use tracing_subscriber::{fmt, EnvFilter};
+    
+    // Default to WARN level, can be overridden with RUST_LOG env var
+    // This reduces noise in production while allowing debug when needed
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("warn"));
+    
+    fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_line_number(false)
+        .init();
+}
+
 /// Get the mtime of the user's shell profile file as a u64 (seconds since epoch).
 /// Returns 0 if the file doesn't exist or can't be read.
 fn get_shell_profile_mtime(shell: &str, home: &str) -> u64 {
@@ -139,6 +156,9 @@ pub fn run() {
     fix_path_env();
     #[cfg(debug_assertions)]
     eprintln!("[Startup] fix_path_env: {:.1}ms", startup_t0.elapsed().as_secs_f64() * 1000.0);
+
+    // Initialize tracing/logging
+    init_tracing();
 
     // Create RagState (HTTP server will be started in setup hook)
     let rag_state = commands::knowledge::RagState::default();

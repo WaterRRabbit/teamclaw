@@ -324,6 +324,7 @@ pub async fn rag_save_config(
 
 #[tauri::command]
 pub async fn rag_start_watcher(
+    app: tauri::AppHandle,
     workspace_path: String,
     state: State<'_, RagState>,
 ) -> Result<(), String> {
@@ -335,7 +336,7 @@ pub async fn rag_start_watcher(
     }
 
     let knowledge_dirs = instance.config.knowledge_dirs(&PathBuf::from(&workspace_path));
-    let watcher = KnowledgeWatcher::watch(knowledge_dirs, instance.indexer.clone())
+    let watcher = KnowledgeWatcher::watch(knowledge_dirs, instance.indexer.clone(), Some(app))
         .map_err(|e| format!("Failed to start file watcher: {}", e))?;
 
     instance.watcher = Some(Arc::new(watcher));
