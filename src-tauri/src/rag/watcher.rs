@@ -7,6 +7,7 @@ use notify_debouncer_full::{
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 
 use crate::rag::indexer::Indexer;
@@ -18,7 +19,7 @@ pub struct KnowledgeWatcher {
 
 impl KnowledgeWatcher {
     /// Start watching multiple knowledge directories for file changes
-    pub fn watch(knowledge_dirs: Vec<PathBuf>, indexer: Arc<Indexer>) -> Result<Self> {
+    pub fn watch(knowledge_dirs: Vec<PathBuf>, indexer: Arc<Indexer>, app_handle: Option<AppHandle>) -> Result<Self> {
         if knowledge_dirs.is_empty() {
             anyhow::bail!("No knowledge directories provided");
         }
@@ -61,11 +62,23 @@ impl KnowledgeWatcher {
             while let Some(result) = rx.recv().await {
                 match result {
                     Ok(events) => {
+                        let mut has_changes = false;
                         for event in events {
-                            if let Err(e) =
-                                handle_file_event(&indexer, &knowledge_dirs_clone, &event).await
-                            {
-                                tracing::error!("Failed to handle file event: {}", e);
+                            match handle_file_event(&indexer, &knowledge_dirs_clone, &event).await {
+                                Ok(changed) => {
+                                    if changed {
+                                        has_changes = true;
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to handle file event: {}", e);
+                                }
+                            }
+                        }
+                        // Notify frontend to refresh index status if there were changes
+                        if has_changes {
+                            if let Some(ref app) = app_handle {
+                                let _ = app.emit("knowledge-index-changed", ());
                             }
                         }
                     }
@@ -87,29 +100,32 @@ impl KnowledgeWatcher {
 }
 
 /// Handle a file system event
+/// Returns Ok(true) if the index was modified, Ok(false) if no changes were made
 async fn handle_file_event(
     indexer: &Indexer,
     knowledge_dirs: &[PathBuf],
     event: &notify_debouncer_full::DebouncedEvent,
-) -> Result<()> {
+) -> Result<bool> {
     use notify_debouncer_full::notify::EventKind;
 
     // Get the affected path
     let paths = &event.event.paths;
     if paths.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
 
     let path = &paths[0];
 
     // Skip hidden files and directories
     if is_hidden(path) {
-        return Ok(());
+        return Ok(false);
     }
 
-    // Only process supported file types
-    if path.is_file() && !is_supported_file(path) {
-        return Ok(());
+    // Only process supported file types (skip this check for Remove events since file doesn't exist)
+    if matches!(event.event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
+        if path.is_file() && !is_supported_file(path) {
+            return Ok(false);
+        }
     }
 
     // Find which knowledge directory this path belongs to
@@ -123,33 +139,38 @@ async fn handle_file_event(
             if path.is_file() {
                 tracing::info!("File changed, re-indexing: {:?}", path);
                 
-                // Get relative path
-                let relative_path = path
-                    .strip_prefix(knowledge_dir)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .to_string();
+                // Use absolute path for indexing
+                let absolute_path = path.to_string_lossy().to_string();
 
                 // Index the single file
-                if let Err(e) = indexer.index_directory(Some(&relative_path)).await {
+                if let Err(e) = indexer.index_directory(Some(&absolute_path)).await {
                     tracing::error!("Failed to index file {:?}: {}", path, e);
+                    return Ok(false);
                 }
+                return Ok(true);
             } else if path.is_dir() {
                 // Directory created, scan it
                 tracing::info!("Directory changed, re-indexing: {:?}", path);
-                let relative_path = path
-                    .strip_prefix(knowledge_dir)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .to_string();
+                let absolute_path = path.to_string_lossy().to_string();
 
-                if let Err(e) = indexer.index_directory(Some(&relative_path)).await {
+                if let Err(e) = indexer.index_directory(Some(&absolute_path)).await {
                     tracing::error!("Failed to index directory {:?}: {}", path, e);
+                    return Ok(false);
                 }
+                return Ok(true);
             }
         }
         EventKind::Remove(_) => {
-            if path.is_file() || !path.exists() {
+            // For remove events, the file/dir no longer exists, so we can't check path.is_file()
+            // We need to check if it looks like a file (has extension) or directory
+            let is_likely_file = path.extension().is_some();
+            
+            if is_likely_file {
+                // Check if this is a supported file type by looking at the extension
+                if !is_supported_file(path) {
+                    return Ok(false);
+                }
+                
                 // File was deleted, remove from index immediately
                 let relative_path = path
                     .strip_prefix(knowledge_dir)
@@ -160,8 +181,10 @@ async fn handle_file_event(
                 tracing::info!("File removed, deleting from index: {:?}", path);
                 if let Err(e) = indexer.delete_file(&relative_path).await {
                     tracing::error!("Failed to delete file from index: {}", e);
+                    return Ok(false);
                 }
-            } else if path.is_dir() {
+                return Ok(true);
+            } else {
                 // Directory was deleted - we could batch delete all files in that directory
                 // For now, log it (cleanup will happen on next full index)
                 tracing::info!("Directory removed: {:?}", path);
@@ -170,7 +193,7 @@ async fn handle_file_event(
         _ => {}
     }
 
-    Ok(())
+    Ok(false)
 }
 
 /// Check if a path is hidden (starts with .)

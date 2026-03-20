@@ -7,7 +7,7 @@ use tauri::Manager;
 use tauri::Emitter;
 use tauri::State;
 
-use crate::stt::{list_models, run_pipeline_streaming, stt_models_dir, SttState};
+use crate::stt::{run_pipeline_streaming, stt_models_dir, SttState};
 
 const HF_BASE: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 const INSTALLED_MIN_RATIO_NUM: u64 = 90;

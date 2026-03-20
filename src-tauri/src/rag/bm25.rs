@@ -190,6 +190,10 @@ impl BM25Index {
 
     /// Get the number of indexed documents
     pub async fn num_docs(&self) -> u64 {
+        // Manually reload reader to ensure we see the latest commits
+        if let Err(e) = self.reader.reload() {
+            tracing::warn!("Failed to reload BM25 reader: {}", e);
+        }
         let searcher = self.reader.searcher();
         searcher.num_docs()
     }

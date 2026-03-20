@@ -212,78 +212,7 @@ export const SkillsSection = React.memo(function SkillsSection() {
     [workspacePath]
   )
 
-  // Watch for file changes in skills directories
-  React.useEffect(() => {
-    if (!workspacePath) return
-
-    if (!isTauri()) return
-
-    let unlisten: (() => void) | undefined
-    let debounceTimer: ReturnType<typeof setTimeout> | undefined
-
-    const setupListener = async () => {
-      try {
-        const { listen } = await import('@tauri-apps/api/event')
-        const { invoke } = await import('@tauri-apps/api/core')
-        const { exists } = await import('@tauri-apps/plugin-fs')
-
-        // Start watching skills directories (workspace only, not global for performance)
-        const skillsDirs = [
-          `${workspacePath}/.opencode/skills`,
-          `${workspacePath}/.claude/skills`,
-          `${workspacePath}/.agents/skills`,
-        ]
-
-        for (const dir of skillsDirs) {
-          try {
-            if (await exists(dir)) {
-              await invoke<boolean>('watch_directory', { path: dir })
-              console.log('[SkillsSection] Started watching:', dir)
-            }
-          } catch (err) {
-            console.warn('[SkillsSection] Failed to watch directory:', dir, err)
-          }
-        }
-
-        // Listen for file-change events
-        unlisten = await listen<{ path: string; kind: string }>('file-change', (event) => {
-          const changedPath = event.payload.path
-          
-          // Check if the change is in a skills directory
-          const isSkillsChange = skillsDirs.some(dir => changedPath.startsWith(dir))
-          
-          if (isSkillsChange) {
-            console.log('[SkillsSection] Skills file change detected:', changedPath)
-            
-            // Debounce refresh to avoid too many updates
-            if (debounceTimer) {
-              clearTimeout(debounceTimer)
-            }
-            
-            debounceTimer = setTimeout(() => {
-              console.log('[SkillsSection] Auto-refreshing skills after file change')
-              loadSkills()
-            }, 500) // Wait 500ms after last change before refreshing
-          }
-        })
-
-        console.log('[SkillsSection] File change listener registered')
-      } catch (error) {
-        console.error('[SkillsSection] Failed to setup file change listener:', error)
-      }
-    }
-
-    setupListener()
-
-    return () => {
-      if (unlisten) {
-        unlisten()
-      }
-      if (debounceTimer) {
-        clearTimeout(debounceTimer)
-      }
-    }
-  }, [workspacePath, loadSkills])
+  // Skills file watching is disabled - users can manually refresh if needed
 
   const saveSkill = async () => {
     if (!skillName.trim()) return

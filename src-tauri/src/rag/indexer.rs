@@ -372,6 +372,21 @@ impl Indexer {
         for (id, path) in all_docs {
             if !seen_paths.contains(&path) {
                 tracing::info!("File deleted, removing from index: {}", path);
+                
+                // Delete from BM25 index first (before deleting from DB)
+                if let Some(bm25) = &self.bm25_index {
+                    let chunks = self.db.get_chunks_by_doc_id(id).await?;
+                    for chunk in chunks {
+                        if let Err(e) = bm25.delete_document(chunk.chunk_id).await {
+                            tracing::warn!("Failed to delete chunk {} from BM25: {}", chunk.chunk_id, e);
+                        }
+                    }
+                    if let Err(e) = bm25.commit().await {
+                        tracing::warn!("Failed to commit BM25 deletions: {}", e);
+                    }
+                }
+                
+                // Then delete from database (cascades to chunks)
                 self.db.delete_document(id).await?;
             }
         }
