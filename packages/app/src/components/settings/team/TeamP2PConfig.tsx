@@ -21,10 +21,10 @@ import {
 import { cn, isTauri, copyToClipboard } from '@/lib/utils'
 import { buildConfig } from '@/lib/build-config'
 import { useTeamModeStore } from '@/stores/team-mode'
+import { useTeamMembersStore } from '@/stores/team-members'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { DeviceIdDisplay } from '@/components/settings/DeviceIdDisplay'
 import { TeamMemberList } from '@/components/settings/TeamMemberList'
-import { AddMemberInput } from '@/components/settings/AddMemberInput'
 import type { DeviceInfo, TeamMember } from '@/lib/git/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -134,6 +134,8 @@ export function TeamP2PConfig() {
   const { t } = useTranslation()
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
 
+  const teamMembersStore = useTeamMembersStore()
+
   const [p2pError, setP2pError] = React.useState<string | null>(null)
   const [joinTicketInput, setJoinTicketInput] = React.useState('')
   const [joinLoading, setJoinLoading] = React.useState(false)
@@ -153,12 +155,10 @@ export function TeamP2PConfig() {
 
   // Device identity & allowlist state
   const [deviceInfo, setDeviceInfo] = React.useState<DeviceInfo | null>(null)
-  const [addMemberError, setAddMemberError] = React.useState<string | null>(null)
   const [joinApprovalPending, setJoinApprovalPending] = React.useState(false)
   const [confirmAction, setConfirmAction] = React.useState<'create' | 'join' | null>(null)
   const [confirmDisconnect, setConfirmDisconnect] = React.useState(false)
 
-  const ownerNodeId = syncStatus?.ownerNodeId ?? syncStatus?.members?.[0]?.nodeId ?? null
   const allowedMembers = syncStatus?.members ?? []
   const isOwner = syncStatus?.role === 'owner'
   const isConnected = syncStatus?.connected ?? false
@@ -250,6 +250,9 @@ export function TeamP2PConfig() {
       await tauriInvoke('p2p_join_drive', { ticket: joinTicketInput.trim(), label: '' })
       setJoinTicketInput('')
       await loadSyncStatus()
+      // Load unified members after successful join
+      await teamMembersStore.loadMembers()
+      await teamMembersStore.loadMyRole()
       // Reload team config so LLM section switches to team mode
       if (workspacePath) {
         const store = useTeamModeStore.getState()
@@ -260,10 +263,11 @@ export function TeamP2PConfig() {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      if (msg.toLowerCase().includes('not authorized')) {
+      if (msg.includes('not been added') || msg.includes('not authorized') || msg.includes('未被添加')) {
         setJoinApprovalPending(true)
+        setP2pError('Your device has not been added to the team. Please contact the team Owner')
       } else {
-        setP2pError(msg)
+        setP2pError('Invalid ticket, please check and try again')
       }
     } finally {
       setJoinLoading(false)
@@ -444,45 +448,7 @@ export function TeamP2PConfig() {
                   </div>
                 </div>
 
-                <TeamMemberList
-                  members={allowedMembers}
-                  ownerNodeId={ownerNodeId ?? ''}
-                  isOwner={isOwner}
-                  onRemove={async (nodeId) => {
-                    try {
-                      await tauriInvoke('team_remove_member', { nodeId })
-                      await loadSyncStatus()
-                    } catch (err) {
-                      setP2pError(err instanceof Error ? err.message : String(err))
-                    }
-                  }}
-                  onRoleChange={async (nodeId, newRole) => {
-                    try {
-                      await tauriInvoke('team_update_member_role', { nodeId, role: newRole })
-                      await loadSyncStatus()
-                    } catch (err) {
-                      setP2pError(err instanceof Error ? err.message : String(err))
-                    }
-                  }}
-                />
-
-                {isOwner && (
-                  <div className="pt-2 border-t">
-                    <p className="text-xs font-medium text-muted-foreground mb-2">{t('settings.team.addMember', 'Add Member')}</p>
-                    <AddMemberInput
-                      onAdd={async (nodeId, name, role) => {
-                        setAddMemberError(null)
-                        try {
-                          await tauriInvoke('team_add_member', { nodeId, name, role })
-                          await loadSyncStatus()
-                        } catch (err) {
-                          setAddMemberError(err instanceof Error ? err.message : String(err))
-                        }
-                      }}
-                      error={addMemberError}
-                    />
-                  </div>
-                )}
+                <TeamMemberList />
               </div>
             </SettingCard>
           )}

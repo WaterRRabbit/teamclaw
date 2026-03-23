@@ -178,7 +178,8 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_aptabase::Builder::new("A-US-9094113207").build())
+        // NOTE: aptabase is registered in the setup() closure below so that
+        // the Tokio runtime is available when its internal `tokio::spawn` runs.
         .plugin({
             // Configure global shortcuts for Spotlight.
             // Errors in shortcut registration should not abort app startup, so we
@@ -334,6 +335,7 @@ pub fn run() {
             commands::cron::cron_toggle_enabled,
             commands::cron::cron_run_job,
             commands::cron::cron_get_runs,
+            commands::cron::cron_get_all_session_ids,
             commands::cron::cron_refresh_delivery,
             commands::clawhub::clawhub_search,
             commands::clawhub::clawhub_explore,
@@ -464,10 +466,29 @@ pub fn run() {
             commands::oss_commands::oss_update_members,
             commands::oss_commands::oss_reset_team_secret,
             commands::oss_commands::oss_get_team_config,
+            commands::team_unified::unified_team_get_members,
+            commands::team_unified::unified_team_add_member,
+            commands::team_unified::unified_team_remove_member,
+            commands::team_unified::unified_team_update_member_role,
+            commands::team_unified::unified_team_get_my_role,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
             let setup_t0 = std::time::Instant::now();
+
+            // Register aptabase here (inside setup) so the Tokio runtime is available
+            // for its internal `tokio::spawn` polling loop.
+            app.handle().plugin(tauri_plugin_aptabase::Builder::new("A-US-9094113207").build())?;
+
+            // Start RAG HTTP API server for MCP bridge
+            let rag_state_handle = app.handle().state::<commands::knowledge::RagState>();
+            let rag_state_for_http = std::sync::Arc::new(rag_state_handle.inner().clone());
+            
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = commands::rag_http_server::start_http_server(rag_state_for_http, 13143).await {
+                    eprintln!("[RAG HTTP] Failed to start HTTP server: {}", e);
+                }
+            });
 
             // Initialize iroh P2P node in background (non-blocking)
             #[cfg(feature = "p2p")]

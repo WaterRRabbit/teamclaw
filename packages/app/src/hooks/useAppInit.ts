@@ -20,6 +20,7 @@ import { useDepsStore, getSetupDecision, markSetupCompleted } from "@/stores/dep
 import { useTelemetryStore } from "@/stores/telemetry";
 import { useTeamOssStore } from "@/stores/team-oss";
 import { useShortcutsStore } from "@/stores/shortcuts";
+import { useCronStore } from "@/stores/cron";
 import { initOpenCodeClient } from "@/lib/opencode/client";
 import {
   startOpenCode,
@@ -260,6 +261,22 @@ export function useGitReposInit() {
       }
     };
   }, [workspacePath, initGitRepos, syncGitRepos]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cron session IDs (for sidebar filtering)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function useCronInit() {
+  const workspacePath = useWorkspaceStore((s) => s.workspacePath);
+  const openCodeReady = useWorkspaceStore((s) => s.openCodeReady);
+
+  useEffect(() => {
+    if (!workspacePath || !openCodeReady) return;
+    useCronStore.getState().loadCronSessionIds().catch((err: unknown) => {
+      console.warn("[App] Cron session IDs load failed (non-critical):", err);
+    });
+  }, [workspacePath, openCodeReady]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

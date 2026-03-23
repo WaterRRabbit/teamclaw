@@ -152,7 +152,7 @@ pub async fn oss_create_team(
         Some(app_handle.clone()),
     );
     manager.set_credentials(resp.credentials.clone(), resp.oss.clone());
-    manager.set_role(TeamRole::Owner);
+    manager.set_role(MemberRole::Owner);
 
     // Scan existing team_dir for content, do initial upload
     info!("oss_create_team: uploading local changes...");
@@ -163,23 +163,23 @@ pub async fn oss_create_team(
     }
     info!("oss_create_team: local changes uploaded");
 
-    // Upload initial members.json to _meta/
-    let members = vec![serde_json::json!({
-        "nodeId": node_id,
-        "name": owner_name,
-        "role": "owner",
-        "joinedAt": chrono::Utc::now().to_rfc3339(),
-    })];
-    let members_json = serde_json::json!({
-        "schemaVersion": 1,
-        "members": members,
-    });
-    let members_bytes = serde_json::to_vec_pretty(&members_json)
-        .map_err(|e| format!("Failed to serialize members.json: {e}"))?;
-    let meta_key = format!("teams/{}/_meta/members.json", team_id);
-    info!("oss_create_team: uploading members.json...");
-    manager.s3_put(&meta_key, &members_bytes).await?;
-    info!("oss_create_team: members.json uploaded");
+    // Upload initial members manifest to _team/members.json
+    let owner_member = TeamMember {
+        node_id: node_id.clone(),
+        name: owner_name.clone(),
+        role: MemberRole::Owner,
+        label: String::new(),
+        platform: String::new(),
+        arch: String::new(),
+        hostname: String::new(),
+        added_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let manifest = TeamManifest {
+        owner_node_id: node_id.clone(),
+        members: vec![owner_member],
+    };
+    manager.upload_members_manifest(&manifest).await
+        .map_err(|e| format!("Failed to upload members manifest: {}", e))?;
 
     // Upload team.json to _meta/
     let team_json = serde_json::json!({
@@ -222,7 +222,7 @@ pub async fn oss_create_team(
         team_secret: Some(team_secret),
         team_name,
         owner_name,
-        role: "owner".to_string(),
+        role: MemberRole::Owner,
     })
 }
 
@@ -253,12 +253,22 @@ pub async fn oss_join_team(
         "teamSecret": team_secret,
         "nodeId": node_id,
     });
-    let resp = manager.call_fc("/token", &body).await?;
+    let resp = manager.call_fc("/token", &body).await
+        .map_err(|_| "Ticket 不正确，请检查后重试".to_string())?;
     manager.set_credentials(resp.credentials.clone(), resp.oss.clone());
 
-    let role = resp.role.clone();
-    if role == "owner" {
-        manager.set_role(TeamRole::Owner);
+    let role: MemberRole = serde_json::from_str(&format!("\"{}\"", resp.role))
+        .unwrap_or(MemberRole::Editor);
+    manager.set_role(role.clone());
+
+    // Two-step NodeId validation: check device is in the members manifest
+    match manager.check_member_authorized(&node_id).await {
+        Ok(_authorized_role) => {
+            // Device is authorized, proceed with sync
+        }
+        Err(_) => {
+            return Err("你的设备未被添加到团队中，请联系团队 Owner".to_string());
+        }
     }
 
     // Run initial sync
@@ -341,10 +351,9 @@ pub async fn oss_restore_sync(
     let resp = manager.call_fc("/token", &body).await?;
     manager.set_credentials(resp.credentials.clone(), resp.oss.clone());
 
-    let role = resp.role.clone();
-    if role == "owner" {
-        manager.set_role(TeamRole::Owner);
-    }
+    let role: MemberRole = serde_json::from_str(&format!("\"{}\"", resp.role))
+        .unwrap_or(MemberRole::Editor);
+    manager.set_role(role.clone());
 
     // Restore from local snapshots, then pull remote
     for doc_type in DocType::all() {
@@ -396,7 +405,7 @@ pub async fn oss_leave_team(
     {
         let guard = state.manager.lock().await;
         if let Some(ref mgr) = *guard {
-            if mgr.role() == TeamRole::Owner {
+            if mgr.role() == MemberRole::Owner {
                 return Err("团队创建者不能离开团队，请先转让管理员角色".to_string());
             }
         }

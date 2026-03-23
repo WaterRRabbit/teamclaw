@@ -3,6 +3,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useTeamOssStore } from '@/stores/team-oss'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { useTeamMembersStore } from '@/stores/team-members'
+import { DeviceIdDisplay } from '@/components/settings/DeviceIdDisplay'
+import { TeamMemberList } from '@/components/settings/TeamMemberList'
+import { invoke } from '@tauri-apps/api/core'
+import type { DeviceInfo } from '@/lib/git/types'
 import {
   Cloud,
   Copy,
@@ -63,6 +68,8 @@ export function TeamOSSConfig() {
     cleanup,
   } = useTeamOssStore()
 
+  const teamMembersStore = useTeamMembersStore()
+
   // Create team form
   const [teamName, setTeamName] = useState('')
   const [ownerName, setOwnerName] = useState('')
@@ -79,6 +86,7 @@ export function TeamOSSConfig() {
   const [showSecret, setShowSecret] = useState(false)
   const [snapshotLoading, setSnapshotLoading] = useState<string | null>(null)
   const [cleanupLoading, setCleanupLoading] = useState<string | null>(null)
+  const [deviceInfo, setDeviceInfo] = useState<DeviceInfo | null>(null)
 
   useEffect(() => {
     if (workspacePath) {
@@ -86,6 +94,10 @@ export function TeamOSSConfig() {
     }
     return () => cleanup()
   }, [workspacePath, initialize, cleanup])
+
+  useEffect(() => {
+    invoke<DeviceInfo>('get_device_info').then(setDeviceInfo).catch(() => {})
+  }, [])
 
   useEffect(() => {
     if (workspacePath && connected) {
@@ -115,12 +127,20 @@ export function TeamOSSConfig() {
       await joinTeam({ workspacePath, teamId: joinTeamId, teamSecret: joinTeamSecret })
       setJoinTeamId('')
       setJoinTeamSecret('')
-    } catch {
-      // error is set in the store
+      // Load unified members after successful join
+      await teamMembersStore.loadMembers()
+      await teamMembersStore.loadMyRole()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('not been added') || msg.includes('未被添加')) {
+        useTeamOssStore.setState({ error: 'Your device has not been added to the team. Please contact the team Owner' })
+      } else {
+        useTeamOssStore.setState({ error: 'Invalid ticket, please check and try again' })
+      }
     } finally {
       setJoining(false)
     }
-  }, [workspacePath, joinTeamId, joinTeamSecret, joinTeam])
+  }, [workspacePath, joinTeamId, joinTeamSecret, joinTeam, teamMembersStore])
 
   const handleLeaveTeam = useCallback(async () => {
     if (!workspacePath) return
@@ -252,6 +272,12 @@ export function TeamOSSConfig() {
                 <UserPlus className="mr-2 h-4 w-4" />
                 {joining ? '加入中...' : '加入团队'}
               </Button>
+              {deviceInfo && (
+                <div className="pt-1">
+                  <label className="mb-1 block text-xs text-muted-foreground">我的设备 ID（分享给团队 Owner 以加入团队）</label>
+                  <DeviceIdDisplay nodeId={deviceInfo.nodeId} />
+                </div>
+              )}
             </div>
           </SettingCard>
         </>
@@ -314,6 +340,10 @@ export function TeamOSSConfig() {
                 </div>
               </div>
             </div>
+          </SettingCard>
+
+          <SettingCard title="团队成员">
+            <TeamMemberList />
           </SettingCard>
 
           <SettingCard title="同步状态" icon={RefreshCw}>
