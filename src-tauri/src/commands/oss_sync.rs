@@ -38,6 +38,7 @@ pub struct OssSyncManager {
     known_files: HashMap<DocType, HashSet<String>>,
 
     poll_interval: Duration,
+    #[allow(dead_code)]
     workspace_path: String,
     team_dir: PathBuf,
     loro_cache_dir: PathBuf,
@@ -122,6 +123,10 @@ impl OssSyncManager {
         self.connected = true;
     }
 
+    pub fn role(&self) -> TeamRole {
+        self.role.clone()
+    }
+
     pub fn set_role(&mut self, role: TeamRole) {
         self.role = role;
     }
@@ -144,10 +149,11 @@ impl OssSyncManager {
         );
 
         let s3_config = aws_sdk_s3::config::Builder::new()
+            .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
             .endpoint_url(&config.endpoint)
             .region(aws_sdk_s3::config::Region::new(config.region.clone()))
             .credentials_provider(credentials)
-            .force_path_style(true)
+            .force_path_style(false)
             .build();
 
         aws_sdk_s3::Client::from_conf(s3_config)
@@ -183,9 +189,10 @@ impl OssSyncManager {
         self.oss_config = Some(resp.oss.clone());
         self.s3_client = Some(Self::create_s3_client(&resp.credentials, &resp.oss));
 
-        match resp.role.as_str() {
-            "owner" => self.role = TeamRole::Owner,
-            _ => self.role = TeamRole::Member,
+        if resp.role == "owner" {
+            self.role = TeamRole::Owner;
+        } else {
+            self.role = TeamRole::Member;
         }
 
         info!("OSS STS token refreshed successfully");
@@ -246,7 +253,7 @@ impl OssSyncManager {
             .body(ByteStream::from(body.to_vec()))
             .send()
             .await
-            .map_err(|e| format!("S3 PUT {key} failed: {e}"))?;
+            .map_err(|e| format!("S3 PUT {key} failed: {e:?}"))?;
 
         Ok(())
     }
@@ -407,14 +414,13 @@ impl OssSyncManager {
 
             // Check if the file exists in the doc with the same hash
             let needs_update = match files_map.get(path) {
-                Some(voc) => match voc.get_deep_value() {
-                    loro::LoroValue::Map(entry) => match entry.get("hash") {
+                Some(loro::ValueOrContainer::Value(loro::LoroValue::Map(entry))) => {
+                    match entry.get("hash") {
                         Some(loro::LoroValue::String(h)) => h.as_ref() != local_hash,
                         _ => true,
-                    },
-                    _ => true,
-                },
-                None => true,
+                    }
+                }
+                _ => true,
             };
 
             if needs_update {
@@ -451,7 +457,7 @@ impl OssSyncManager {
 
                     if deleted {
                         // Remove file from disk if it exists
-                        let file_path = dir.join(Path::new(path.as_str()));
+                        let file_path = dir.join(path.as_str());
                         if file_path.exists() {
                             let _ = std::fs::remove_file(&file_path);
                         }
@@ -459,7 +465,7 @@ impl OssSyncManager {
                         doc_files.insert(path.to_string());
 
                         if let Some(loro::LoroValue::String(content_str)) = entry.get("content") {
-                            let file_path = dir.join(Path::new(path.as_str()));
+                            let file_path = dir.join(path.as_str());
                             if let Some(parent) = file_path.parent() {
                                 std::fs::create_dir_all(parent).map_err(|e| {
                                     format!("Failed to create dir {}: {e}", parent.display())
@@ -578,25 +584,17 @@ impl OssSyncManager {
                     let content_str =
                         String::from_utf8_lossy(content).to_string();
 
-                    // TODO: Verify the LoroMap sub-map creation API. The idea is to
-                    // create/update a nested map entry for each file path.
-                    let entry_map = files_map
-                        .get_or_create_container(path, loro::LoroMap::new())
+                    let entry_map = files_map.get_or_create_container(path, loro::LoroMap::new())
                         .map_err(|e| format!("Failed to get/create map entry for {path}: {e}"))?;
-                    entry_map
-                        .insert("content", content_str.as_str())
+                    entry_map.insert("content", content_str.as_str())
                         .map_err(|e| format!("Failed to set content for {path}: {e}"))?;
-                    entry_map
-                        .insert("hash", hash.as_str())
+                    entry_map.insert("hash", hash.as_str())
                         .map_err(|e| format!("Failed to set hash for {path}: {e}"))?;
-                    entry_map
-                        .insert("deleted", false)
+                    entry_map.insert("deleted", false)
                         .map_err(|e| format!("Failed to set deleted for {path}: {e}"))?;
-                    entry_map
-                        .insert("updatedBy", node_id.as_str())
+                    entry_map.insert("updatedBy", node_id.as_str())
                         .map_err(|e| format!("Failed to set updatedBy for {path}: {e}"))?;
-                    entry_map
-                        .insert("updatedAt", now.as_str())
+                    entry_map.insert("updatedAt", now.as_str())
                         .map_err(|e| format!("Failed to set updatedAt for {path}: {e}"))?;
                 }
             }
@@ -614,14 +612,11 @@ impl OssSyncManager {
                             let entry_map = files_map
                                 .get_or_create_container(path, loro::LoroMap::new())
                                 .map_err(|e| format!("Failed to get map entry for {path}: {e}"))?;
-                            entry_map
-                                .insert("deleted", true)
+                            entry_map.insert("deleted", true)
                                 .map_err(|e| format!("Failed to mark deleted for {path}: {e}"))?;
-                            entry_map
-                                .insert("updatedBy", node_id.as_str())
+                            entry_map.insert("updatedBy", node_id.as_str())
                                 .map_err(|e| format!("Failed to set updatedBy for {path}: {e}"))?;
-                            entry_map
-                                .insert("updatedAt", now.as_str())
+                            entry_map.insert("updatedAt", now.as_str())
                                 .map_err(|e| format!("Failed to set updatedAt for {path}: {e}"))?;
                         }
                     }
@@ -863,7 +858,9 @@ impl OssSyncManager {
         );
         let update_keys = self.s3_list(&updates_prefix).await?;
 
-        let keys_to_purge: Vec<String> = update_keys
+        // Collect keys to delete first, then delete — avoids borrowing self
+        // mutably (known_files) and immutably (s3_delete) at the same time.
+        let keys_to_delete: Vec<String> = update_keys
             .iter()
             .filter(|key| {
                 let file_ts: i64 = key
@@ -877,14 +874,13 @@ impl OssSyncManager {
             .cloned()
             .collect();
 
-        for key in &keys_to_purge {
+        for key in &keys_to_delete {
             self.s3_delete(key).await?;
             deleted_count += 1;
         }
-
         let known_set = self.known_files.entry(doc_type).or_default();
-        for key in keys_to_purge {
-            known_set.remove(&key);
+        for key in &keys_to_delete {
+            known_set.remove(key);
         }
 
         info!(
