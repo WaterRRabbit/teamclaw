@@ -125,7 +125,6 @@ async fn require_manager_role(
 pub async fn unified_team_get_members(
     opencode_state: State<'_, super::opencode::OpenCodeState>,
     oss_state: State<'_, super::oss_sync::OssSyncState>,
-    #[cfg(feature = "p2p")]
     iroh_state: State<'_, super::p2p_state::IrohState>,
 ) -> Result<Vec<TeamMember>, String> {
     let workspace_path = super::team::get_workspace_path(&opencode_state)?;
@@ -158,7 +157,6 @@ pub async fn unified_team_add_member(
     member: TeamMember,
     opencode_state: State<'_, super::opencode::OpenCodeState>,
     oss_state: State<'_, super::oss_sync::OssSyncState>,
-    #[cfg(feature = "p2p")]
     iroh_state: State<'_, super::p2p_state::IrohState>,
 ) -> Result<(), String> {
     validate_node_id(&member.node_id)?;
@@ -207,7 +205,6 @@ pub async fn unified_team_remove_member(
     node_id: String,
     opencode_state: State<'_, super::opencode::OpenCodeState>,
     oss_state: State<'_, super::oss_sync::OssSyncState>,
-    #[cfg(feature = "p2p")]
     iroh_state: State<'_, super::p2p_state::IrohState>,
 ) -> Result<(), String> {
     let workspace_path = super::team::get_workspace_path(&opencode_state)?;
@@ -253,7 +250,6 @@ pub async fn unified_team_update_member_role(
     role: MemberRole,
     opencode_state: State<'_, super::opencode::OpenCodeState>,
     oss_state: State<'_, super::oss_sync::OssSyncState>,
-    #[cfg(feature = "p2p")]
     iroh_state: State<'_, super::p2p_state::IrohState>,
 ) -> Result<(), String> {
     let workspace_path = super::team::get_workspace_path(&opencode_state)?;
@@ -297,7 +293,6 @@ pub async fn unified_team_update_member_role(
 pub async fn unified_team_get_my_role(
     opencode_state: State<'_, super::opencode::OpenCodeState>,
     oss_state: State<'_, super::oss_sync::OssSyncState>,
-    #[cfg(feature = "p2p")]
     iroh_state: State<'_, super::p2p_state::IrohState>,
 ) -> Result<MemberRole, String> {
     let workspace_path = super::team::get_workspace_path(&opencode_state)?;
