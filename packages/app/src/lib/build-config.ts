@@ -9,6 +9,11 @@ export interface ChannelsFeatureConfig {
   wecom: boolean
 }
 
+export interface UpdaterConfig {
+  endpoint: string
+  pubkey: string
+}
+
 export interface BuildConfig {
   team: {
     llm: {
@@ -21,6 +26,8 @@ export interface BuildConfig {
   }
   app: {
     name: string
+    identifier: string
+    updater: UpdaterConfig
   }
   features: {
     advancedMode: boolean
@@ -60,12 +67,26 @@ export function hasAnyChannel(channels: boolean | ChannelsFeatureConfig): boolea
   return Object.values(channels).some(Boolean)
 }
 
+/**
+ * Fallback configuration values used when build config is not provided or incomplete.
+ * 
+ * IMPORTANT: Release-related fields (app.identifier, app.updater) are intentionally empty.
+ * These MUST be configured in build.config.json - there are no sensible defaults for
+ * application identity and update endpoints, as they are deployment-specific.
+ */
 const fallback: BuildConfig = {
   team: {
     llm: { baseUrl: '', model: '', modelName: '', supportsVision: false },
     lockLlmConfig: false,
   },
-  app: { name: 'TeamClaw' },
+  app: {
+    name: 'TeamClaw',
+    identifier: '',
+    updater: {
+      endpoint: '',
+      pubkey: '',
+    },
+  },
   features: { advancedMode: true, teamMode: true, updater: true, channels: { ...allChannelsEnabled } },
   defaults: { locale: 'zh-CN', theme: 'system' },
 }

@@ -18,10 +18,7 @@ export interface UpdateInfo {
   errorMessage?: string
 }
 
-interface PendingUpdate {
-  downloadUrl: string
-  signature: string
-}
+type PendingUpdate = any // Tauri Update object
 
 interface UpdaterStore {
   update: UpdateInfo
@@ -49,20 +46,17 @@ export const useUpdaterStore = create<UpdaterStore>((set, get) => ({
     set({ update: { state: "checking" } })
 
     try {
-      const { invoke } = await import("@tauri-apps/api/core")
-      const result = await invoke<{ version: string; notes: string; downloadUrl: string; signature: string } | null>("check_update")
+      const { check } = await import("@tauri-apps/plugin-updater")
+      const update = await check()
 
-      if (result) {
+      if (update?.available) {
         set({
           update: {
             state: "available",
-            version: result.version,
-            notes: result.notes || "",
+            version: update.version,
+            notes: update.body || "",
           },
-          pendingUpdate: {
-            downloadUrl: result.downloadUrl,
-            signature: result.signature,
-          },
+          pendingUpdate: update,
         })
       } else {
         set({ update: { state: "up-to-date" }, pendingUpdate: null })
@@ -87,7 +81,7 @@ export const useUpdaterStore = create<UpdaterStore>((set, get) => ({
 
   installUpdate: async () => {
     const pending = get().pendingUpdate
-    if (!pending) {
+    if (!pending || typeof pending !== 'object' || !('download' in pending)) {
       set({ update: { state: "error", errorMessage: "No pending update to install." } })
       return
     }
@@ -95,10 +89,9 @@ export const useUpdaterStore = create<UpdaterStore>((set, get) => ({
     set({ update: { state: "downloading", progress: 0 } })
 
     try {
-      const { invoke } = await import("@tauri-apps/api/core")
       const { listen } = await import("@tauri-apps/api/event")
 
-      // Listen for download progress events from Rust
+      // Listen for download progress events
       const unlisten = await listen<{ downloaded: number; contentLength: number | null }>(
         "update-download-progress",
         (event) => {
@@ -115,10 +108,8 @@ export const useUpdaterStore = create<UpdaterStore>((set, get) => ({
       )
 
       try {
-        await invoke("download_and_install_update", {
-          downloadUrl: pending.downloadUrl,
-          signature: pending.signature,
-        })
+        // Use Tauri official updater API
+        await pending.downloadAndInstall()
         set({ update: { state: "ready" }, pendingUpdate: null })
       } finally {
         unlisten()

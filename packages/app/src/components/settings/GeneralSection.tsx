@@ -15,6 +15,11 @@ import {
   Plus,
   X,
   Wrench,
+  RefreshCw,
+  Download,
+  CheckCircle,
+  Info,
+  AlertCircle,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -33,6 +38,8 @@ import { useSuggestionsStore } from '@/stores/suggestions'
 import { buildConfig } from '@/lib/build-config'
 import { useUIStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { useUpdaterStore } from '@/stores/updater'
+import { useAppVersion } from '@/lib/version'
 
 // Theme helpers
 const THEME_STORAGE_KEY = 'teamclaw-theme'
@@ -270,6 +277,8 @@ export const GeneralSection = React.memo(function GeneralSection() {
 
       <ChatSuggestionsCard />
 
+      <VersionUpdateCard />
+
       {buildConfig.features.advancedMode && (
         <div className="flex items-center justify-between px-1 py-1">
           <label className="text-xs text-muted-foreground flex items-center gap-1.5">
@@ -382,6 +391,184 @@ function ChatSuggestionsCard() {
             {t('settings.general.addSuggestion', 'Add')}
           </Button>
         </div>
+      </div>
+    </SettingCard>
+  )
+}
+
+function VersionUpdateCard() {
+  const { t } = useTranslation()
+  const appVersion = useAppVersion()
+  const update = useUpdaterStore((s) => s.update)
+  const checkForUpdates = useUpdaterStore((s) => s.checkForUpdates)
+  const installUpdate = useUpdaterStore((s) => s.installUpdate)
+  const restart = useUpdaterStore((s) => s.restart)
+
+  const handleCheckUpdate = React.useCallback(() => {
+    checkForUpdates(false)
+  }, [checkForUpdates])
+
+  const handleInstallUpdate = React.useCallback(() => {
+    installUpdate()
+  }, [installUpdate])
+
+  const handleRestart = React.useCallback(() => {
+    restart()
+  }, [restart])
+
+  return (
+    <SettingCard>
+      <h4 className="font-medium mb-4 flex items-center gap-2">
+        <Info className="h-4 w-4 text-muted-foreground" />
+        {t('settings.general.versionUpdate', 'Version & Updates')}
+      </h4>
+      
+      <div className="space-y-4">
+        {/* Current Version */}
+        <div className="flex items-center justify-between">
+          <div className="space-y-1">
+            <label className="text-sm font-medium">
+              {t('settings.general.currentVersion', 'Current Version')}
+            </label>
+            <p className="text-xs text-muted-foreground">
+              v{appVersion}
+            </p>
+          </div>
+        </div>
+
+        {/* Update Status */}
+        {update.state !== 'idle' && (
+          <div className="border-t pt-4">
+            <div className="space-y-3">
+              {/* Checking State */}
+              {update.state === 'checking' && (
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                  <RefreshCw className="h-4 w-4 text-blue-500 mt-0.5 shrink-0 animate-spin" />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-blue-600 dark:text-blue-400">
+                      {t('settings.general.checkingUpdates', 'Checking for updates...')}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Update Available */}
+              {update.state === 'available' && (
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-green-500/10 border border-green-500/20">
+                  <Download className="h-4 w-4 text-green-500 mt-0.5 shrink-0" />
+                  <div className="flex-1 space-y-2">
+                    <div>
+                      <p className="text-sm font-medium text-green-600 dark:text-green-400">
+                        {t('settings.general.updateAvailable', 'Update available')}
+                      </p>
+                      {update.version && (
+                        <p className="text-xs text-muted-foreground">
+                          {t('settings.general.newVersion', 'New version')}: v{update.version}
+                        </p>
+                      )}
+                    </div>
+                    <Button
+                      onClick={handleInstallUpdate}
+                      size="sm"
+                      className="h-8"
+                    >
+                      <Download className="h-3 w-3 mr-1" />
+                      {t('settings.general.downloadUpdate', 'Download Update')}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* Downloading State */}
+              {update.state === 'downloading' && (
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                  <Download className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />
+                  <div className="flex-1 space-y-2">
+                    <p className="text-sm font-medium text-blue-600 dark:text-blue-400">
+                      {t('settings.general.downloading', 'Downloading update...')}
+                    </p>
+                    {update.progress !== undefined && (
+                      <div className="space-y-1">
+                        <div className="h-2 bg-blue-200 dark:bg-blue-900 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-blue-500 transition-all duration-300"
+                            style={{ width: `${update.progress}%` }}
+                          />
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {update.progress}%
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Ready to Install */}
+              {update.state === 'ready' && (
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-green-500/10 border border-green-500/20">
+                  <CheckCircle className="h-4 w-4 text-green-500 mt-0.5 shrink-0" />
+                  <div className="flex-1 space-y-2">
+                    <p className="text-sm font-medium text-green-600 dark:text-green-400">
+                      {t('settings.general.readyToInstall', 'Update downloaded and ready to install')}
+                    </p>
+                    <Button
+                      onClick={handleRestart}
+                      size="sm"
+                      className="h-8"
+                    >
+                      <RefreshCw className="h-3 w-3 mr-1" />
+                      {t('settings.general.restartToUpdate', 'Restart to Update')}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* Up to Date */}
+              {update.state === 'up-to-date' && (
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-green-500/10 border border-green-500/20">
+                  <CheckCircle className="h-4 w-4 text-green-500 mt-0.5 shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-green-600 dark:text-green-400">
+                      {t('settings.general.upToDate', 'You are using the latest version')}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Error State */}
+              {update.state === 'error' && (
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
+                  <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 shrink-0" />
+                  <div className="flex-1 space-y-1">
+                    <p className="text-sm font-medium text-red-600 dark:text-red-400">
+                      {t('settings.general.updateError', 'Update check failed')}
+                    </p>
+                    {update.errorMessage && (
+                      <p className="text-xs text-muted-foreground">
+                        {update.errorMessage}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Check for Updates Button */}
+        {update.state === 'idle' && (
+          <div className="border-t pt-4">
+            <Button
+              variant="outline"
+              onClick={handleCheckUpdate}
+              className="w-full"
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              {t('settings.general.checkForUpdates', 'Check for Updates')}
+            </Button>
+          </div>
+        )}
       </div>
     </SettingCard>
   )

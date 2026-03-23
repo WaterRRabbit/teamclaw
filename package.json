@@ -9,7 +9,7 @@
     "preview": "pnpm --filter @teamclaw/app preview",
     "tauri": "node scripts/tauri-cli.js",
     "tauri:dev": "sh -c 'unset CI; [ \"$(uname -s)\" = Darwin ] && export CMAKE_OSX_DEPLOYMENT_TARGET=10.15; exec tauri dev \"$@\"' sh",
-    "tauri:build": "sh -c 'unset CI; [ \"$(uname -s)\" = Darwin ] && export CMAKE_OSX_DEPLOYMENT_TARGET=10.15; exec tauri build \"$@\"' sh",
+    "tauri:build": "node scripts/prepare-build.js && sh -c 'unset CI; [ \"$(uname -s)\" = Darwin ] && export CMAKE_OSX_DEPLOYMENT_TARGET=10.15; exec tauri build \"$@\"' sh",
     "tauri:build:win": "tauri build --bundles nsis -- --no-default-features",
     "tauri:dev:win": "tauri dev -- --no-default-features",
     "installer:win": "node scripts/build-windows.js",

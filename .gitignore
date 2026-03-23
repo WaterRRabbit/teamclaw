@@ -27,6 +27,7 @@ pnpm-debug.log*
 .env
 .env.local
 .env.*.local
+.env.release
 config.json
 build.config.local.json
 build.config.production.json
