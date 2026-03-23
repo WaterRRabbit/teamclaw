@@ -168,7 +168,7 @@ pub fn run() {
     let _guard = rt.enter();
     tauri::async_runtime::set(rt.handle().clone());
 
-    // Create RagState (HTTP server will be started in setup hook)
+    // RAG state for Tauri commands (MCP bridge uses standalone rag-mcp-server; see binaries README)
     let rag_state = commands::knowledge::RagState::default();
 
     tauri::Builder::default()
@@ -479,16 +479,6 @@ pub fn run() {
             // Register aptabase here (inside setup) so the Tokio runtime is available
             // for its internal `tokio::spawn` polling loop.
             app.handle().plugin(tauri_plugin_aptabase::Builder::new("A-US-9094113207").build())?;
-
-            // Start RAG HTTP API server for MCP bridge
-            let rag_state_handle = app.handle().state::<commands::knowledge::RagState>();
-            let rag_state_for_http = std::sync::Arc::new(rag_state_handle.inner().clone());
-            
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = commands::rag_http_server::start_http_server(rag_state_for_http, 13143).await {
-                    eprintln!("[RAG HTTP] Failed to start HTTP server: {}", e);
-                }
-            });
 
             // Initialize iroh P2P node in background (non-blocking)
             #[cfg(feature = "p2p")]
