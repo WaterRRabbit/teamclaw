@@ -341,7 +341,7 @@ impl OssSyncManager {
         Ok(keys)
     }
 
-    async fn s3_delete(&self, key: &str) -> Result<(), String> {
+    pub async fn s3_delete(&self, key: &str) -> Result<(), String> {
         let client = self.client()?;
         let bucket = self.bucket()?;
 
@@ -793,6 +793,20 @@ impl OssSyncManager {
                         let _ = manager.persist_local_snapshot(doc_type);
                     }
 
+                    // List pending applications for owners/editors
+                    if manager.role() == MemberRole::Owner || manager.role() == MemberRole::Editor {
+                        match manager.list_applications().await {
+                            Ok(apps) => {
+                                if let Some(handle) = &manager.app_handle {
+                                    let _ = handle.emit("oss-applications-updated", &apps);
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Failed to list applications: {}", e);
+                            }
+                        }
+                    }
+
                     manager.syncing = false;
                     let now = Utc::now().to_rfc3339();
                     manager.last_sync_at = Some(now);
@@ -1047,6 +1061,46 @@ impl OssSyncManager {
         self.upload_members_manifest(&manifest).await
     }
 
+    /// List pending applications from S3.
+    /// Also performs orphan cleanup: deletes applications for nodeIds already in manifest.
+    pub async fn list_applications(&self) -> Result<Vec<TeamApplication>, String> {
+        let prefix = format!("teams/{}/_meta/applications/", self.team_id);
+        let keys = self.s3_list(&prefix).await?;
+
+        if keys.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Load current manifest for orphan check
+        let manifest = self.download_members_manifest().await?.unwrap_or(TeamManifest {
+            owner_node_id: String::new(),
+            members: vec![],
+        });
+        let member_ids: HashSet<&str> = manifest.members.iter().map(|m| m.node_id.as_str()).collect();
+
+        let mut applications = Vec::new();
+        for key in &keys {
+            let data = match self.s3_get(key).await {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let app: TeamApplication = match serde_json::from_slice(&data) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+
+            // Orphan cleanup: if nodeId is already a member, delete the application file
+            if member_ids.contains(app.node_id.as_str()) {
+                let _ = self.s3_delete(key).await;
+                continue;
+            }
+
+            applications.push(app);
+        }
+
+        Ok(applications)
+    }
+
     /// Check if a node_id is in the members manifest
     pub async fn check_member_authorized(&self, node_id: &str) -> Result<MemberRole, String> {
         let manifest = self
@@ -1148,5 +1202,77 @@ pub fn delete_team_secret(team_id: &str) -> Result<(), String> {
     entry
         .delete_credential()
         .map_err(|e| format!("Failed to delete team secret from keyring: {e}"))?;
+    Ok(())
+}
+
+pub fn write_pending_application(workspace_path: &str, pending: &PendingApplication) -> Result<(), String> {
+    let config_path = Path::new(workspace_path)
+        .join(TEAMCLAW_DIR)
+        .join("teamclaw.json");
+
+    let mut json: Value = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read teamclaw.json: {e}"))?;
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse teamclaw.json: {e}"))?
+    } else {
+        Value::Object(serde_json::Map::new())
+    };
+
+    let pending_value = serde_json::to_value(pending)
+        .map_err(|e| format!("Failed to serialize pending application: {e}"))?;
+
+    let root = json.as_object_mut()
+        .ok_or_else(|| "teamclaw.json root is not an object".to_string())?;
+    let oss = root.entry("oss").or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(oss_obj) = oss.as_object_mut() {
+        oss_obj.insert("pendingApplication".to_string(), pending_value);
+    }
+
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {e}"))?;
+    }
+
+    let output = serde_json::to_string_pretty(&json)
+        .map_err(|e| format!("Failed to serialize teamclaw.json: {e}"))?;
+    std::fs::write(&config_path, output)
+        .map_err(|e| format!("Failed to write teamclaw.json: {e}"))?;
+
+    Ok(())
+}
+
+pub fn read_pending_application(workspace_path: &str) -> Option<PendingApplication> {
+    let config_path = Path::new(workspace_path)
+        .join(TEAMCLAW_DIR)
+        .join("teamclaw.json");
+
+    let content = std::fs::read_to_string(&config_path).ok()?;
+    let json: Value = serde_json::from_str(&content).ok()?;
+    let pending = json.get("oss")?.get("pendingApplication")?;
+    serde_json::from_value(pending.clone()).ok()
+}
+
+pub fn clear_pending_application(workspace_path: &str) -> Result<(), String> {
+    let config_path = Path::new(workspace_path)
+        .join(TEAMCLAW_DIR)
+        .join("teamclaw.json");
+
+    if !config_path.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read teamclaw.json: {e}"))?;
+    let mut json: Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse teamclaw.json: {e}"))?;
+
+    if let Some(oss) = json.get_mut("oss").and_then(|v| v.as_object_mut()) {
+        oss.remove("pendingApplication");
+    }
+
+    let output = serde_json::to_string_pretty(&json)
+        .map_err(|e| format!("Failed to serialize teamclaw.json: {e}"))?;
+    std::fs::write(&config_path, output)
+        .map_err(|e| format!("Failed to write teamclaw.json: {e}"))?;
+
     Ok(())
 }
