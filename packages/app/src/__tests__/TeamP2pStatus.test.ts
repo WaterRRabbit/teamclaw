@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, act } from '@testing-library/react'
+import { render, screen, act, fireEvent } from '@testing-library/react'
 import * as React from 'react'
 
 // Mock react-i18next
@@ -13,13 +13,21 @@ vi.mock('react-i18next', () => ({
   }),
 }))
 
+// Mock Tauri event API to prevent transformCallback errors
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async () => () => {}),
+}))
+
 const mockInvoke = vi.fn(async (cmd: string) => {
-  if (cmd === 'team_check_git_installed') return { installed: true, version: '2.40.0' }
-  if (cmd === 'get_team_config') return null
   if (cmd === 'get_device_info') return { nodeId: 'test-node', platform: 'macos', arch: 'aarch64', hostname: 'test-mac' }
   if (cmd === 'get_p2p_config') return { enabled: true, tickets: [{ ticket: 'test-ticket', label: 'Team Alpha', addedAt: '2024-01-01' }], publishEnabled: false, lastSyncAt: null }
   if (cmd === 'p2p_sync_status') return null
+  if (cmd === 'webdav_get_status') return null
   if (cmd === 'p2p_reconnect') return null
+  if (cmd === 'unified_team_get_members') return []
+  if (cmd === 'unified_team_get_my_role') return null
+  if (cmd === 'list_team_members') return []
+  if (cmd === 'get_my_role') return null
   return null
 })
 
@@ -33,31 +41,37 @@ beforeEach(() => {
   ;(window as unknown as { __TAURI__: unknown }).__TAURI__ = {}
   ;(window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
     invoke: mockInvoke,
+    transformCallback: vi.fn(() => Math.random()),
   }
 })
 
+async function renderAndSwitchToP2P() {
+  const { TeamSection } = await import('../components/settings/TeamSection')
+  await act(async () => {
+    render(React.createElement(TeamSection))
+  })
+  // Switch to P2P tab (OSS/S3 is default now)
+  await act(async () => {
+    const tabs = screen.getAllByRole('tab')
+    const p2pTab = tabs.find(t => t.textContent?.includes('P2P'))!
+    fireEvent.click(p2pTab)
+  })
+}
+
 describe('TeamP2P Shared Content Display', () => {
   it('shows shared content card in P2P tab', async () => {
-    const { TeamSection } = await import('../components/settings/TeamSection')
+    await renderAndSwitchToP2P()
 
-    await act(async () => {
-      render(React.createElement(TeamSection))
-    })
-
-    // P2P tab is active by default; shared content is always visible
+    // P2P tab shared content is always visible
     expect(screen.getByText('skills/')).toBeDefined()
     expect(screen.getByText('.mcp/')).toBeDefined()
     expect(screen.getByText('knowledge/')).toBeDefined()
   })
 
   it('shows shared content info text', async () => {
-    const { TeamSection } = await import('../components/settings/TeamSection')
+    await renderAndSwitchToP2P()
 
-    await act(async () => {
-      render(React.createElement(TeamSection))
-    })
-
-    // P2P tab is active by default
+    // The component text: 'The following directories are synced via P2P:'
     expect(screen.getByText(/synced via P2P/i)).toBeDefined()
   })
 })

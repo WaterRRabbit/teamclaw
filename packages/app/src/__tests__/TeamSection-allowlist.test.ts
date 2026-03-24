@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, act } from '@testing-library/react'
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
 import * as React from 'react'
 
 // Mock react-i18next
@@ -11,6 +11,11 @@ vi.mock('react-i18next', () => ({
       return key
     },
   }),
+}))
+
+// Mock Tauri event API to prevent transformCallback errors
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async () => () => {}),
 }))
 
 const mockDeviceInfo = {
@@ -41,22 +46,32 @@ const connectedSyncStatus = {
 let addMemberResult: null | Error = null
 
 const mockInvoke = vi.fn(async (cmd: string, _args?: Record<string, unknown>) => {
-  if (cmd === 'team_check_git_installed') return { installed: true, version: '2.40.0' }
-  if (cmd === 'get_team_config') return null
   if (cmd === 'get_device_info') return mockDeviceInfo
   if (cmd === 'get_p2p_config') return null
   if (cmd === 'p2p_sync_status') return connectedSyncStatus
+  if (cmd === 'webdav_get_status') return null
   if (cmd === 'p2p_reconnect') return null
   if (cmd === 'team_add_member') {
     if (addMemberResult instanceof Error) throw addMemberResult
     return null
   }
   if (cmd === 'team_remove_member') return null
+  // Team members store commands
+  if (cmd === 'unified_team_get_members') return connectedSyncStatus.members.map(m => ({ ...m, role: 'owner', name: m.hostname }))
+  if (cmd === 'unified_team_get_my_role') return 'owner'
+  if (cmd === 'list_team_members') return connectedSyncStatus.members.map(m => ({ ...m, role: 'owner', name: m.hostname }))
+  if (cmd === 'get_my_role') return 'owner'
   return null
 })
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: mockInvoke,
+}))
+
+// Mock plugin-fs to prevent import errors
+vi.mock('@tauri-apps/plugin-fs', () => ({
+  readTextFile: vi.fn(async () => ''),
+  exists: vi.fn(async () => false),
 }))
 
 beforeEach(() => {
@@ -65,6 +80,7 @@ beforeEach(() => {
   ;(window as unknown as { __TAURI__: unknown }).__TAURI__ = {}
   ;(window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
     invoke: mockInvoke,
+    transformCallback: vi.fn(() => Math.random()),
   }
 })
 
@@ -76,7 +92,14 @@ describe('TeamSection Allowlist Integration', () => {
       render(React.createElement(TeamSection))
     })
 
-    // P2P tab is active by default; wait for device info to load
+    // Switch to P2P tab (OSS is default now)
+    await act(async () => {
+      const tabs = screen.getAllByRole('tab')
+      const p2pTab = tabs.find(t => t.textContent?.includes('P2P'))!
+      fireEvent.click(p2pTab)
+    })
+
+    // Wait for device info to load
     await waitFor(() => {
       // Should show the Device ID somewhere
       expect(screen.getAllByText(/my-devic/).length).toBeGreaterThan(0)
@@ -88,6 +111,13 @@ describe('TeamSection Allowlist Integration', () => {
 
     await act(async () => {
       render(React.createElement(TeamSection))
+    })
+
+    // Switch to P2P tab (OSS is default now)
+    await act(async () => {
+      const tabs = screen.getAllByRole('tab')
+      const p2pTab = tabs.find(t => t.textContent?.includes('P2P'))!
+      fireEvent.click(p2pTab)
     })
 
     // Wait for sync status to load (shows connected state with owner role)

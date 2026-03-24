@@ -13,6 +13,11 @@ vi.mock('react-i18next', () => ({
   }),
 }))
 
+// Mock Tauri event API to prevent transformCallback errors
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async () => () => {}),
+}))
+
 let joinResult: string | Error = 'ok'
 let joinCompleted = false
 
@@ -26,11 +31,10 @@ const connectedSyncStatus = {
 }
 
 const mockInvoke = vi.fn(async (cmd: string, _args?: Record<string, unknown>) => {
-  if (cmd === 'team_check_git_installed') return { installed: true, version: '2.40.0' }
-  if (cmd === 'get_team_config') return null
   if (cmd === 'get_device_info') return { nodeId: 'test-node', platform: 'macos', arch: 'aarch64', hostname: 'test-mac' }
   if (cmd === 'get_p2p_config') return null
   if (cmd === 'p2p_sync_status') return joinCompleted ? connectedSyncStatus : null
+  if (cmd === 'webdav_get_status') return null
   if (cmd === 'p2p_reconnect') return null
   // Return exists: true to trigger confirmation dialog, which avoids
   // the stale closure in checkTeamDirAndConfirm's useCallback([]) dependency
@@ -42,6 +46,10 @@ const mockInvoke = vi.fn(async (cmd: string, _args?: Record<string, unknown>) =>
   }
   if (cmd === 'p2p_disconnect_source') return null
   if (cmd === 'save_p2p_config') return null
+  if (cmd === 'unified_team_get_members') return []
+  if (cmd === 'unified_team_get_my_role') return null
+  if (cmd === 'list_team_members') return []
+  if (cmd === 'get_my_role') return null
   return null
 })
 
@@ -57,18 +65,27 @@ beforeEach(() => {
   ;(window as unknown as { __TAURI__: unknown }).__TAURI__ = {}
   ;(window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
     invoke: mockInvoke,
+    transformCallback: vi.fn(() => Math.random()),
   }
 })
 
+async function renderAndSwitchToP2P() {
+  const { TeamSection } = await import('../components/settings/TeamSection')
+  await act(async () => {
+    render(React.createElement(TeamSection))
+  })
+  // Switch to P2P tab (OSS/S3 is default now)
+  await act(async () => {
+    const tabs = screen.getAllByRole('tab')
+    const p2pTab = tabs.find(t => t.textContent?.includes('P2P'))!
+    fireEvent.click(p2pTab)
+  })
+}
+
 describe('TeamP2P Join Flow', () => {
   it('shows ticket input and Join button in P2P tab', async () => {
-    const { TeamSection } = await import('../components/settings/TeamSection')
+    await renderAndSwitchToP2P()
 
-    await act(async () => {
-      render(React.createElement(TeamSection))
-    })
-
-    // P2P tab is active by default
     expect(screen.getByPlaceholderText(/ticket/i)).toBeDefined()
     expect(screen.getByRole('button', { name: /join/i })).toBeDefined()
   })
@@ -76,11 +93,7 @@ describe('TeamP2P Join Flow', () => {
   it('shows inline error for invalid ticket', async () => {
     joinResult = new Error('Invalid ticket format')
 
-    const { TeamSection } = await import('../components/settings/TeamSection')
-
-    await act(async () => {
-      render(React.createElement(TeamSection))
-    })
+    await renderAndSwitchToP2P()
 
     // Wait for init effects
     await act(async () => {
@@ -110,7 +123,7 @@ describe('TeamP2P Join Flow', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByText(/invalid ticket format/i)).toBeDefined()
+      expect(screen.getByText(/invalid ticket/i)).toBeDefined()
     })
   })
 })

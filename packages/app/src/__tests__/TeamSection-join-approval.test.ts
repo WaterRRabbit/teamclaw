@@ -54,11 +54,21 @@ const mockInvoke = vi.fn(async (cmd: string, _args?: Record<string, unknown>) =>
     joinCompleted = true
     return null
   }
+  if (cmd === 'webdav_get_status') return null
+  if (cmd === 'unified_team_get_members') return []
+  if (cmd === 'unified_team_get_my_role') return null
+  if (cmd === 'list_team_members') return []
+  if (cmd === 'get_my_role') return null
   return null
 })
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: mockInvoke,
+}))
+
+// Mock Tauri event API to prevent transformCallback errors
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async () => () => {}),
 }))
 
 // Mock plugin-fs to prevent import errors from team-mode store
@@ -74,6 +84,7 @@ beforeEach(() => {
   ;(window as unknown as { __TAURI__: unknown }).__TAURI__ = {}
   ;(window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
     invoke: mockInvoke,
+    transformCallback: vi.fn(() => Math.random()),
   }
 })
 
@@ -83,7 +94,7 @@ afterEach(() => {
 
 describe('TeamSection Join Approval Status', () => {
   it('shows "Waiting for approval" when join fails with Not authorized', async () => {
-    joinDriveError = new Error('Not authorized: your NodeId is not in the team allowlist')
+    joinDriveError = new Error('not authorized: your NodeId is not in the team allowlist')
     const { TeamSection } = await import('../components/settings/TeamSection')
 
     await act(async () => {
