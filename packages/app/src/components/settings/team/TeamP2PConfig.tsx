@@ -170,7 +170,7 @@ export function TeamP2PConfig() {
   const [leaveLoading, setLeaveLoading] = React.useState(false)
 
   // Seed-based join flow
-  const [joinMode, setJoinMode] = React.useState<'seed' | 'ticket'>('seed')
+  const [joinMode, setJoinMode] = React.useState<'seed' | 'ticket'>('ticket')
   const [seedUrl, setSeedUrl] = React.useState(buildConfig.team.seedUrl || '')
   const [teamId, setTeamId] = React.useState('')
   const [teamSecret, setTeamSecret] = React.useState('')
@@ -299,9 +299,13 @@ export function TeamP2PConfig() {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      if (msg.includes('not been added') || msg.includes('not authorized') || msg.includes('未被添加')) {
+      if (msg.includes('not been added') || msg.includes('not authorized') || msg.includes('Not authorized') || msg.includes('未被添加')) {
         setJoinApprovalPending(true)
-        setP2pError('Your device has not been added to the team. Ask the team Owner to add your Device ID, then try again.')
+        if (joinMode === 'seed') {
+          setP2pError(t('settings.team.seedJoinPendingDesc', 'Your join request has been submitted. The team owner will review your application. Once approved, click "Join" again to connect.'))
+        } else {
+          setP2pError(t('settings.team.notAuthorizedDesc', 'Your device is not in the team allowlist. Please send your Device ID below to the team owner, and ask them to add you via "Add Member". Once added, try joining again.'))
+        }
       } else {
         setP2pError(msg)
       }
@@ -1026,36 +1030,48 @@ export function TeamP2PConfig() {
                   </Button>
                 </div>
               ) : (
-                <div className="flex gap-2">
-                  <Input
-                    value={joinTicketInput}
-                    onChange={(e) => setJoinTicketInput(e.target.value)}
-                    placeholder={t('settings.team.p2pJoinPlaceholder', 'Paste a P2P ticket here...')}
-                    className="h-11"
-                    disabled={joinLoading}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && joinTicketInput.trim()) {
-                        handleJoin()
-                      }
-                    }}
-                  />
-                  <Button
-                    onClick={handleJoin}
-                    disabled={joinLoading || !joinTicketInput.trim()}
-                    className="gap-2 shrink-0"
-                  >
-                    {joinLoading ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        {t('settings.team.joining', 'Joining...')}
-                      </>
-                    ) : (
-                      <>
-                        <Link className="h-4 w-4" />
-                        {t('settings.team.join', 'Join')}
-                      </>
-                    )}
-                  </Button>
+                <div className="space-y-3">
+                  <div className="flex gap-2">
+                    <Input
+                      value={joinTicketInput}
+                      onChange={(e) => setJoinTicketInput(e.target.value)}
+                      placeholder={t('settings.team.p2pJoinPlaceholder', 'Paste a P2P ticket here...')}
+                      className="h-11"
+                      disabled={joinLoading}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && joinTicketInput.trim()) {
+                          handleJoin()
+                        }
+                      }}
+                    />
+                    <Button
+                      onClick={handleJoin}
+                      disabled={joinLoading || !joinTicketInput.trim()}
+                      className="gap-2 shrink-0"
+                    >
+                      {joinLoading ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          {t('settings.team.joining', 'Joining...')}
+                        </>
+                      ) : (
+                        <>
+                          <Link className="h-4 w-4" />
+                          {t('settings.team.join', 'Join')}
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                  {/* Device ID + reminder for LAN join */}
+                  {deviceInfo && (
+                    <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+                      <p className="text-xs text-muted-foreground">
+                        <AlertCircle className="h-3 w-3 inline mr-1" />
+                        {t('settings.team.lanJoinHint', 'Before joining, ask the team owner to add your Device ID. Otherwise you will be rejected.')}
+                      </p>
+                      <DeviceIdDisplay nodeId={deviceInfo.nodeId} />
+                    </div>
+                  )}
                 </div>
               )}
 

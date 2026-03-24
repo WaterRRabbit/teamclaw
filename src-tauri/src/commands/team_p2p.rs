@@ -1029,10 +1029,13 @@ async fn disk_to_doc_watcher(
 // ─── Authorization ──────────────────────────────────────────────────────
 
 /// Check if a device is authorized to join the team by reading `_team/members.json`.
-/// Returns Ok(()) if authorized or if no manifest exists (backwards compatibility).
+/// Rejects if manifest is missing or if the joiner is not listed.
 pub fn check_join_authorization(team_dir: &str, joiner_node_id: &str) -> Result<(), String> {
     match read_members_manifest(team_dir)? {
-        None => Ok(()), // No manifest = backwards compatible, allow all
+        None => Err(format!(
+            "Not authorized — no members manifest found. Share your Device ID with the team owner: {}",
+            joiner_node_id
+        )),
         Some(manifest) => {
             if manifest.members.iter().any(|m| m.node_id == joiner_node_id) {
                 Ok(())
