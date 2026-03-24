@@ -64,7 +64,7 @@ pub async fn take_screenshot<R: Runtime>(
           error: None,
         })
       },
-      Err(e) => Err(Error::WindowOperationFailed(format!("Failed to execute screenshot script: {}", e)))
+      Err(e) => Err(Error::WindowOperationFailed { operation: "screenshot".to_string(), reason: format!("Failed to execute screenshot script: {}", e), context: None })
     }
   }).await
 }

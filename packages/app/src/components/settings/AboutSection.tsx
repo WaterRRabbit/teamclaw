@@ -25,7 +25,6 @@ export const AboutSection = React.memo(function AboutSection() {
   const update = useUpdaterStore((s) => s.update);
   const checkForUpdates = useUpdaterStore((s) => s.checkForUpdates);
   const installUpdate = useUpdaterStore((s) => s.installUpdate);
-
   const isChecking = update.state === "checking";
   const isAvailable = update.state === "available";
   const isUpToDate = update.state === "up-to-date";

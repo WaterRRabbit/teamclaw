@@ -18,7 +18,9 @@ import {
 } from "./session-internals";
 import {
   useStreamingStore,
+  cleanupAllChildSessions,
 } from "@/stores/streaming";
+import { syncSetSessionId } from "@/lib/opencode/sse";
 import { insertMessageSorted } from "@/lib/insert-message-sorted";
 
 type SessionSet = (fn: ((state: SessionState) => Partial<SessionState>) | Partial<SessionState>) => void;
@@ -113,6 +115,10 @@ export function createMessageActions(set: SessionSet, get: SessionGet) {
           return;
         }
         activeSessionId = newSession.id;
+        // Sync SSE session filter immediately — don't wait for React useEffect.
+        // Without this, message.updated events for the new session are dropped
+        // because the SSE filter still has the old (empty) session ID.
+        syncSetSessionId(activeSessionId);
         console.log("[Session] Created new session:", activeSessionId);
       }
 
@@ -224,6 +230,10 @@ export function createMessageActions(set: SessionSet, get: SessionGet) {
         };
       });
 
+      // Set timeout immediately after streaming starts — before any async work (RAG, API call).
+      // This ensures that if autoInjectKnowledge or the API call hangs, the timeout still fires.
+      setMessageTimeout(pendingAssistantId, activeSessionId);
+
       try {
         const client = getOpenCodeClient();
         const { selectedModel } = get();
@@ -244,7 +254,17 @@ export function createMessageActions(set: SessionSet, get: SessionGet) {
         }
 
         // RAG V2: Auto-inject knowledge before sending message
-        const ragResult = await get().autoInjectKnowledge(content.trim());
+        // Wrap with a 3-second timeout to prevent hanging if knowledge search is unresponsive
+        const RAG_TIMEOUT_MS = 3000;
+        const ragResult = await Promise.race([
+          get().autoInjectKnowledge(content.trim()),
+          new Promise<{ context?: string; chunks?: SearchResult[] }>((resolve) =>
+            setTimeout(() => {
+              console.warn('[RAG Auto-Inject] Timed out after', RAG_TIMEOUT_MS, 'ms, skipping');
+              resolve({});
+            }, RAG_TIMEOUT_MS)
+          ),
+        ]);
         if (ragResult.context) {
           systemPrompt = systemPrompt
             ? `${ragResult.context}\n\n---\n\n${systemPrompt}`
@@ -292,6 +312,7 @@ export function createMessageActions(set: SessionSet, get: SessionGet) {
             systemPrompt,
           );
         }
+        // Reset timeout after successful send — gives a fresh 5 minutes from actual send time
         setMessageTimeout(pendingAssistantId, activeSessionId);
       } catch (error) {
         clearMessageTimeout();
@@ -319,16 +340,61 @@ export function createMessageActions(set: SessionSet, get: SessionGet) {
     // Abort the current session's operation
     abortSession: async () => {
       const { activeSessionId } = get();
-      const { streamingMessageId } = useStreamingStore.getState();
-      if (!activeSessionId || !streamingMessageId) return;
+      if (!activeSessionId) return;
+      const { streamingMessageId, childSessionStreaming } = useStreamingStore.getState();
+      const childSessionIds = Object.entries(childSessionStreaming || {})
+        .filter(([, state]) => state.isStreaming)
+        .map(([sessionId]) => sessionId);
+
+      // Fallback: even if streamingMessageId is null (e.g. cleared by a race condition),
+      // still force-clear all streaming/UI state so the user isn't stuck with a red button.
+      if (!streamingMessageId && childSessionIds.length === 0) {
+        console.warn("[Session] abortSession: no streamingMessageId, force-clearing UI state");
+        clearMessageTimeout();
+        useStreamingStore.getState().clearStreaming();
+        set((state) => ({
+          pendingQuestion: null,
+          pendingPermission: null,
+          pendingPermissionChildSessionId: null,
+          sessionError: null,
+          sessions: state.sessions.map((s) => ({
+            ...s,
+            messages: s.messages.map((m) =>
+              m.isStreaming ? { ...m, isStreaming: false } : m,
+            ),
+          })),
+        }));
+        return;
+      }
 
       try {
         clearMessageTimeout();
         const client = getOpenCodeClient();
-        await client.abortSession(activeSessionId);
+        const sessionIdsToAbort = Array.from(new Set([activeSessionId, ...childSessionIds]));
+
+        // Abort with a 5-second timeout per request — don't let a hung server block the UI
+        const ABORT_TIMEOUT_MS = 5000;
+        const abortResults = await Promise.allSettled(
+          sessionIdsToAbort.map((sessionId) =>
+            Promise.race([
+              client.abortSession(sessionId),
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error('Abort request timed out')), ABORT_TIMEOUT_MS)
+              ),
+            ])
+          ),
+        );
+        const failedAborts = abortResults.filter((r) => r.status === "rejected");
+        if (failedAborts.length > 0) {
+          console.warn("[Session] Some abort requests failed:", failedAborts);
+        }
 
         useStreamingStore.getState().clearStreaming();
+        cleanupAllChildSessions();
         set((state) => ({
+          pendingQuestion: null,
+          pendingPermission: null,
+          pendingPermissionChildSessionId: null,
           sessions: state.sessions.map((s) => ({
             ...s,
             messages: s.messages.map((m) =>
@@ -349,6 +415,8 @@ export function createMessageActions(set: SessionSet, get: SessionGet) {
           }
         }, 500);
       } catch (error) {
+        useStreamingStore.getState().clearStreaming();
+        cleanupAllChildSessions();
         set({
           error:
             error instanceof Error ? error.message : "Failed to abort session",

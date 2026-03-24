@@ -1,4 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+globalThis.ResizeObserver = vi.fn().mockImplementation(() => ({
+  observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn(),
+}))
+
 import { render } from '@testing-library/react';
 import { useSessionStore } from '@/stores/session';
 import { useStreamingStore } from '@/stores/streaming';

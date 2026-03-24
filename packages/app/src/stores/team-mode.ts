@@ -22,11 +22,14 @@ interface TeamModeState {
   teamModelConfig: TeamModelConfig | null
   teamApiKey: string | null // user-overridden key, null = use NodeId
   _appliedConfigKey: string | null // fingerprint of last applied config to avoid redundant apply
+  devUnlocked: boolean // hidden dev mode: unlocks model selector & hidden dirs in team mode
+  myRole: 'owner' | 'editor' | 'viewer' | null
 
   loadTeamConfig: (workspacePath: string) => Promise<void>
   applyTeamModelToOpenCode: (workspacePath: string) => Promise<void>
   setTeamApiKey: (key: string | null, workspacePath?: string) => Promise<void>
   clearTeamMode: (workspacePath?: string) => Promise<void>
+  setDevUnlocked: (unlocked: boolean) => void
 }
 
 interface TeamStatusResponse {
@@ -57,6 +60,8 @@ export const useTeamModeStore = create<TeamModeState>((set, get) => ({
   teamMode: false,
   teamModelConfig: null,
   _appliedConfigKey: null,
+  devUnlocked: false,
+  myRole: null,
   teamApiKey: (() => {
     try {
       return localStorage.getItem(TEAM_API_KEY_STORAGE) || null
@@ -73,13 +78,19 @@ export const useTeamModeStore = create<TeamModeState>((set, get) => ({
         model: status.llm.model,
         modelName: status.llm.modelName || status.llm.model,
       }
-      set({ teamMode: true, teamModelConfig: config })
+      set({ teamModelConfig: config })
     } else {
-      const wasTeamMode = get().teamMode
-      set({ teamMode: false, teamModelConfig: null })
-      if (wasTeamMode) {
-        await get().clearTeamMode(_workspacePath)
-      }
+      set({ teamModelConfig: null })
+    }
+
+    // Team mode is determined by P2P sync status
+    // Load user's role (non-critical)
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const role = await invoke<string | null>('unified_team_get_my_role')
+      set({ myRole: role as any })
+    } catch {
+      // Non-critical, role can be loaded later
     }
   },
 
@@ -181,6 +192,14 @@ export const useTeamModeStore = create<TeamModeState>((set, get) => ({
     }
   },
 
+  setDevUnlocked: (unlocked: boolean) => {
+    set({ devUnlocked: unlocked })
+    // Refresh file tree so hidden files appear/disappear
+    import('./workspace').then(({ useWorkspaceStore }) => {
+      useWorkspaceStore.getState().refreshFileTree()
+    })
+  },
+
   clearTeamMode: async (workspacePath?: string) => {
     // When LLM config is locked via build config, prevent exiting team mode
     if (buildConfig.team.lockLlmConfig) return
@@ -271,3 +290,4 @@ export const useTeamModeStore = create<TeamModeState>((set, get) => ({
     } catch { /* ignore */ }
   },
 }))
+

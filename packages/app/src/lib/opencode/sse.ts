@@ -161,6 +161,18 @@ export function isChildSession(id: string): boolean {
   return childSessionIds.has(id)
 }
 
+// Module-level SSE instance reference for synchronous session ID updates.
+// This solves the race condition where sendMessage creates a new session
+// and sends the API request before React's useEffect updates the SSE filter,
+// causing message.updated events to be silently dropped.
+let activeSseInstance: OpenCodeSSE | null = null
+
+export function syncSetSessionId(id: string): void {
+  if (activeSseInstance) {
+    activeSseInstance.setSessionId(id)
+  }
+}
+
 export class OpenCodeSSE {
   private eventSource: EventSource | null = null
   private baseUrl: string
@@ -182,6 +194,10 @@ export class OpenCodeSSE {
   private inactivityWarningActive = false
   private static readonly INACTIVITY_CHECK_INTERVAL = 10000 // Check every 10s
   private static readonly INACTIVITY_THRESHOLD = 30000 // Warn after 30s of no events
+  private static readonly INACTIVITY_RECONNECT_THRESHOLD = 60000 // Force reconnect after 60s of no events if not OPEN
+
+  // Debug logging — off by default; enable via: localStorage.setItem('debug-sse', '1')
+  private static debug(): boolean { return localStorage.getItem('debug-sse') === '1' }
 
   constructor(baseUrl: string, sessionId: string | null, handlers: SSEHandlers, workspacePath?: string) {
     this.baseUrl = baseUrl.replace(/\/$/, '')
@@ -311,19 +327,18 @@ export class OpenCodeSSE {
           return
         }
         // Log filtered events for debugging streaming interruptions
-        if (type.startsWith('message.')) {
+        if (OpenCodeSSE.debug() && type.startsWith('message.')) {
           console.log('[SSE] Filtered (session mismatch):', {
             type,
             eventSessionId,
             expectedSessionId: this.sessionId,
-            isChildSession: childSessionIds.has(eventSessionId),
           })
         }
         return // Ignore message/tool events for other sessions
       }
     }
 
-    console.log('[SSE] Event:', type, properties)
+    if (OpenCodeSSE.debug()) console.log('[SSE] Event:', type, properties)
 
     switch (type) {
       case 'server.connected':
@@ -363,12 +378,7 @@ export class OpenCodeSSE {
             // We rely on createdMessageIds to prevent duplicates, but this is unreliable
             // because message.completed clears the ID. The frontend's handleMessageCreated
             // has a secondary check (messageExists) to prevent creating duplicate messages.
-            console.log('[SSE] message.updated (new):', {
-              messageId: info.id,
-              sessionId: info.sessionID,
-              completed: info.time.completed,
-              hasTrackedBefore: this.createdMessageIds.has(info.id),
-            })
+            if (OpenCodeSSE.debug()) console.log('[SSE] message.updated (new):', info.id)
             this.createdMessageIds.add(info.id)
             this.handlers.onMessageCreated?.({
               id: info.id,
@@ -378,10 +388,7 @@ export class OpenCodeSSE {
             })
           } else if (info.time.completed) {
             // Message completed - clean up tracking
-            console.log('[SSE] message.updated (completed):', {
-              messageId: info.id,
-              sessionId: info.sessionID,
-            })
+            if (OpenCodeSSE.debug()) console.log('[SSE] message.updated (completed):', info.id)
             this.createdMessageIds.delete(info.id)
             this.handlers.onMessageCompleted?.({
               messageId: info.id,
@@ -398,7 +405,7 @@ export class OpenCodeSSE {
             })
           } else {
             // Message already tracked and not completed - ignore (ongoing streaming)
-            console.log('[SSE] message.updated (already tracked):', info.id)
+            if (OpenCodeSSE.debug()) console.log('[SSE] message.updated (already tracked):', info.id)
           }
         }
         break
@@ -424,12 +431,7 @@ export class OpenCodeSSE {
         const sessionId = completedData.sessionId || completedData.sessionID
         
         if (messageId && sessionId) {
-          console.log('[SSE] message.completed event:', {
-            messageId,
-            sessionId,
-            hasContent: !!(completedData.finalContent || completedData.content),
-            contentLength: (completedData.finalContent || completedData.content || '').length,
-          })
+          if (OpenCodeSSE.debug()) console.log('[SSE] message.completed:', messageId)
           this.handlers.onMessageCompleted?.({
             messageId,
             sessionId,
@@ -462,13 +464,6 @@ export class OpenCodeSSE {
         }
         if (deltaProps.delta) {
           const partType = this.partTypeMap.get(deltaProps.partID) || 'text'
-          console.log('[SSE] message.part.delta:', {
-            messageId: deltaProps.messageID,
-            partId: deltaProps.partID,
-            partType,
-            deltaLength: deltaProps.delta.length,
-            sessionId: deltaProps.sessionID,
-          })
           if (partType === 'reasoning') {
             this.handlers.onMessagePartUpdated?.({
               messageId: deltaProps.messageID,
@@ -501,13 +496,10 @@ export class OpenCodeSSE {
           time?: { start: number; end?: number }
         }
 
-        console.log('[SSE] message.part.updated:', {
+        if (OpenCodeSSE.debug()) console.log('[SSE] message.part.updated:', {
           partId: part.id,
           messageId: part.messageID,
           type: part.type,
-          hasText: !!part.text,
-          textLength: part.text?.length || 0,
-          hasEnd: !!part.time?.end,
           tool: part.tool,
         })
 
@@ -561,8 +553,8 @@ export class OpenCodeSSE {
             mappedStatus = 'completed'
           }
           
-          if (mappedStatus === 'completed') {
-            console.log('[SSE] Tool completed:', part.tool, 'state:', state)
+          if (OpenCodeSSE.debug() && mappedStatus === 'completed') {
+            console.log('[SSE] Tool completed:', part.tool)
           }
           
           const metadata = state?.metadata as ToolExecutingEvent['metadata'] | undefined
@@ -590,7 +582,7 @@ export class OpenCodeSSE {
         const statusSessionId = statusData.sessionID || (properties.sessionId as string | undefined)
         const status = statusData.status
         if (!statusSessionId || !status) break
-        console.log('[SSE] session.status RAW:', JSON.stringify({ sessionID: statusSessionId, status }))
+        if (OpenCodeSSE.debug()) console.log('[SSE] session.status:', statusSessionId, status?.type)
 
         let statusInfo: import('./sse').SessionStatusInfo
         if (status.type === 'retry') {
@@ -618,7 +610,7 @@ export class OpenCodeSSE {
       case 'session.idle': {
         const idleSessionId = (properties as { sessionID?: string }).sessionID
           || (properties.sessionId as string | undefined)
-        console.log('[SSE] Session idle, session:', idleSessionId)
+        if (OpenCodeSSE.debug()) console.log('[SSE] Session idle:', idleSessionId)
 
         if (idleSessionId) {
           this.handlers.onSessionStatus?.({ sessionId: idleSessionId, status: { type: 'idle' } })
@@ -636,7 +628,7 @@ export class OpenCodeSSE {
         const createdDir = createdData.info?.directory || (properties.directory as string | undefined)
         const parentID = createdData.info?.parentID
         
-        console.log('[SSE] Session created:', createdSessionId, parentID ? `(child of ${parentID})` : '')
+        if (OpenCodeSSE.debug()) console.log('[SSE] Session created:', createdSessionId)
         
         if (createdSessionId) {
           this.handlers.onSessionCreated?.({
@@ -656,7 +648,7 @@ export class OpenCodeSSE {
         const updatedSessionId = updatedData.sessionID || updatedData.info?.id
         const updatedDir = updatedData.info?.directory || (properties.directory as string | undefined)
         
-        console.log('[SSE] Session updated:', updatedSessionId)
+        if (OpenCodeSSE.debug()) console.log('[SSE] Session updated:', updatedSessionId)
         
         if (updatedSessionId) {
           this.handlers.onSessionUpdated?.({
@@ -692,7 +684,7 @@ export class OpenCodeSSE {
           }
         }
         
-        console.log('[SSE] Question asked:', questionData.id)
+        if (OpenCodeSSE.debug()) console.log('[SSE] Question asked:', questionData.id)
         
         this.handlers.onQuestionAsked?.({
           id: questionData.id,
@@ -707,7 +699,7 @@ export class OpenCodeSSE {
       }
 
       case 'question.answered': {
-        console.log('[SSE] Question answered')
+        if (OpenCodeSSE.debug()) console.log('[SSE] Question answered')
         // Question has been answered - the tool status will be updated via message.part.updated
         break
       }
@@ -723,7 +715,7 @@ export class OpenCodeSSE {
           }>
         }
         
-        console.log('[SSE] Todo updated:', todoData.todos?.length || 0, 'items')
+        if (OpenCodeSSE.debug()) console.log('[SSE] Todo updated:', todoData.todos?.length || 0, 'items')
         
         this.handlers.onTodoUpdated?.({
           sessionId: todoData.sessionID,
@@ -749,7 +741,7 @@ export class OpenCodeSSE {
           }>
         }
         
-        console.log('[SSE] Session diff:', diffData.diff?.length || 0, 'files')
+        if (OpenCodeSSE.debug()) console.log('[SSE] Session diff:', diffData.diff?.length || 0, 'files')
         
         this.handlers.onSessionDiff?.({
           sessionId: diffData.sessionID,
@@ -760,7 +752,7 @@ export class OpenCodeSSE {
 
       case 'file.edited': {
         const fileData = properties as { file: string }
-        console.log('[SSE] File edited:', fileData.file)
+        if (OpenCodeSSE.debug()) console.log('[SSE] File edited:', fileData.file)
         this.handlers.onFileEdited?.({ file: fileData.file })
         break
       }
@@ -776,7 +768,7 @@ export class OpenCodeSSE {
           tool?: { callID: string; messageID: string }
         }
         
-        console.log('[SSE] Permission asked:', permData.permission, permData.id, permData.patterns, 'always:', permData.always)
+        if (OpenCodeSSE.debug()) console.log('[SSE] Permission asked:', permData.permission, permData.id)
         
         this.handlers.onPermissionAsked?.({
           id: permData.id,
@@ -791,12 +783,12 @@ export class OpenCodeSSE {
       }
 
       case 'permission.replied': {
-        console.log('[SSE] Permission replied')
+        if (OpenCodeSSE.debug()) console.log('[SSE] Permission replied')
         break
       }
 
       case 'session.error': {
-        console.log('[SSE] Session error RAW:', JSON.stringify(properties))
+        if (OpenCodeSSE.debug()) console.log('[SSE] Session error RAW:', JSON.stringify(properties))
         const errorData = properties as {
           sessionID?: string
           error?: {
@@ -838,7 +830,7 @@ export class OpenCodeSSE {
       }
 
       default:
-        console.log('[SSE] Unhandled event type:', type)
+        if (OpenCodeSSE.debug()) console.log('[SSE] Unhandled event type:', type)
     }
   }
 
@@ -883,6 +875,21 @@ export class OpenCodeSSE {
         this.inactivityWarningActive = true
         console.log(`[SSE] No events for ${Math.round(elapsed / 1000)}s, task may still be running...`)
         this.handlers.onInactivityWarning?.(true)
+      }
+
+      // Force reconnect if no events for 60s AND EventSource is not in OPEN state.
+      // This handles the case where EventSource is stuck in CONNECTING (readyState=0)
+      // with the browser silently failing to auto-reconnect.
+      if (
+        elapsed >= OpenCodeSSE.INACTIVITY_RECONNECT_THRESHOLD &&
+        this.eventSource &&
+        this.eventSource.readyState !== EventSource.OPEN
+      ) {
+        console.warn(`[SSE] No events for ${Math.round(elapsed / 1000)}s and readyState=${this.eventSource.readyState}, forcing reconnect`)
+        this.hasNotifiedConnected = false
+        this.handlers.onDisconnected?.()
+        this.disconnect()
+        this.connect()
       }
     }, OpenCodeSSE.INACTIVITY_CHECK_INTERVAL)
   }
@@ -966,12 +973,14 @@ export function useOpenCodeSSE(
       onInactivityWarning: (active) => handlersRef.current.onInactivityWarning?.(active),
     }, workspacePath || undefined)
 
+    activeSseInstance = sseRef.current
     sseRef.current.connect()
   }, [baseUrl]) // Only baseUrl — sessionId changes are handled by setSessionId()
 
   const disconnect = useCallback(() => {
     sseRef.current?.disconnect()
     sseRef.current = null
+    activeSseInstance = null
   }, [])
 
   // Connect SSE once when baseUrl is available.

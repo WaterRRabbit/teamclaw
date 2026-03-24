@@ -1,30 +1,46 @@
 // Suppress cfg warnings from the legacy `objc` crate's `msg_send!` / `sel_impl!` macros.
 #![allow(unexpected_cfgs)]
+// Suppress style/complexity clippy lints that are non-critical for this codebase.
+#![allow(
+    clippy::cloned_ref_to_slice_refs,
+    clippy::collapsible_else_if,
+    clippy::collapsible_if,
+    clippy::derivable_impls,
+    clippy::for_kv_map,
+    clippy::io_other_error,
+    clippy::iter_nth_zero,
+    clippy::manual_clamp,
+    clippy::manual_is_multiple_of,
+    clippy::manual_map,
+    clippy::manual_strip,
+    clippy::map_identity,
+    clippy::needless_borrow,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ptr_arg,
+    clippy::redundant_closure,
+    clippy::redundant_guards,
+    clippy::redundant_pattern_matching,
+    clippy::same_item_push,
+    clippy::too_many_arguments,
+    clippy::trim_split_whitespace,
+    clippy::type_complexity,
+    clippy::unnecessary_lazy_evaluations,
+    clippy::unnecessary_map_or,
+    clippy::unnecessary_unwrap,
+    clippy::unwrap_or_default,
+    clippy::useless_asref,
+    clippy::useless_format,
+    clippy::useless_vec
+)]
 
 use tauri::Manager;
+use tauri_plugin_aptabase::EventTracker;
 use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
 
 mod commands;
-mod stt;
 mod rag;
+mod stt;
 mod telemetry;
-
-/// Initialize tracing subscriber for logging
-fn init_tracing() {
-    use tracing_subscriber::{fmt, EnvFilter};
-    
-    // Default to WARN level, can be overridden with RUST_LOG env var
-    // This reduces noise in production while allowing debug when needed
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("warn"));
-    
-    fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .with_thread_ids(false)
-        .with_line_number(false)
-        .init();
-}
 
 /// Get the mtime of the user's shell profile file as a u64 (seconds since epoch).
 /// Returns 0 if the file doesn't exist or can't be read.
@@ -96,7 +112,9 @@ fn fix_path_env() {
 
     // Try cache first
     let home = std::env::var("HOME").unwrap_or_default();
-    let cache_path = std::path::PathBuf::from(&home).join(".teamclaw").join("cached-path.txt");
+    let cache_path = std::path::PathBuf::from(&home)
+        .join(".teamclaw")
+        .join("cached-path.txt");
     let profile_mtime = get_shell_profile_mtime(&shell, &home);
 
     if let Some(cached) = read_path_cache(&cache_path, profile_mtime) {
@@ -126,9 +144,9 @@ fn fix_path_env() {
             // Fallback: append common paths that might be missing
             let current = std::env::var("PATH").unwrap_or_default();
             let extra = [
-                "/opt/homebrew/bin",              // macOS ARM Homebrew
+                "/opt/homebrew/bin", // macOS ARM Homebrew
                 "/opt/homebrew/sbin",
-                "/usr/local/bin",                 // macOS Intel Homebrew
+                "/usr/local/bin", // macOS Intel Homebrew
                 "/usr/local/sbin",
                 "/home/linuxbrew/.linuxbrew/bin", // Linux Homebrew
             ];
@@ -155,21 +173,53 @@ pub fn run() {
     // Fix PATH before anything else so all child processes can find tools
     fix_path_env();
     #[cfg(debug_assertions)]
-    eprintln!("[Startup] fix_path_env: {:.1}ms", startup_t0.elapsed().as_secs_f64() * 1000.0);
+    eprintln!(
+        "[Startup] fix_path_env: {:.1}ms",
+        startup_t0.elapsed().as_secs_f64() * 1000.0
+    );
 
-    // Initialize tracing/logging
-    init_tracing();
+    // Create a Tokio runtime and register it with Tauri BEFORE plugin initialization.
+    // tauri-plugin-aptabase calls tokio::spawn during init (start_polling),
+    // which panics if no reactor is running on the main thread.
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    let _guard = rt.enter();
+    tauri::async_runtime::set(rt.handle().clone());
 
-    // Create RagState (HTTP server will be started in setup hook)
+    // RAG state for Tauri commands (MCP bridge uses standalone rag-mcp-server; see binaries README)
     let rag_state = commands::knowledge::RagState::default();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_log::Builder::new()
+            .level(log::LevelFilter::Info)
+            .filter(|metadata| {
+                // Suppress noisy third-party crate logs
+                let target = metadata.target();
+                !(target.starts_with("tracing::span")
+                    || target.starts_with("iroh_relay")
+                    || target.starts_with("iroh_base")
+                    || target.starts_with("iroh_net_report")
+                    || target.starts_with("iroh_quinn")
+                    || target.starts_with("hyper_util")
+                    || target.starts_with("hyper::")
+                    || target.starts_with("tauri_plugin_aptabase")
+                    || target.starts_with("reqwest")
+                    || target.starts_with("hickory_")
+                    || target.starts_with("netwatch")
+                    || target.starts_with("portmapper"))
+            })
+            .targets([
+                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: None }),
+                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
+            ]).build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // NOTE: aptabase is registered in the setup() closure below so that
+        // the Tokio runtime is available when its internal `tokio::spawn` runs.
         .plugin({
             // Configure global shortcuts for Spotlight.
             // Errors in shortcut registration should not abort app startup, so we
@@ -226,6 +276,7 @@ pub fn run() {
         .manage(telemetry::commands::TelemetryState::default())
         .manage(crate::stt::SttState::default())
         .manage({
+            #[allow(unused_mut)]
             let mut wvm = commands::webview::WebviewManager::default();
             #[cfg(target_os = "macos")]
             commands::webview::init_shared_config(&mut wvm);
@@ -256,9 +307,6 @@ pub fn run() {
             commands::knowledge::rag_save_config,
             commands::knowledge::rag_start_watcher,
             commands::knowledge::rag_stop_watcher,
-            commands::knowledge::rag_list_memories,
-            commands::knowledge::rag_save_memory,
-            commands::knowledge::rag_delete_memory,
             commands::opencode::start_opencode,
             commands::opencode::stop_opencode,
             commands::opencode::get_opencode_status,
@@ -311,6 +359,14 @@ pub fn run() {
             commands::gateway::stop_wecom_gateway,
             commands::gateway::get_wecom_gateway_status,
             commands::gateway::test_wecom_credentials,
+            commands::gateway::get_wechat_config,
+            commands::gateway::save_wechat_config,
+            commands::gateway::start_wechat_gateway,
+            commands::gateway::stop_wechat_gateway,
+            commands::gateway::get_wechat_gateway_status,
+            commands::gateway::start_wechat_qr_login,
+            commands::gateway::poll_wechat_qr_status,
+            commands::gateway::test_wechat_connection,
             commands::cron::cron_init,
             commands::cron::cron_list_jobs,
             commands::cron::cron_add_job,
@@ -319,6 +375,7 @@ pub fn run() {
             commands::cron::cron_toggle_enabled,
             commands::cron::cron_run_job,
             commands::cron::cron_get_runs,
+            commands::cron::cron_get_all_session_ids,
             commands::cron::cron_refresh_delivery,
             commands::clawhub::clawhub_search,
             commands::clawhub::clawhub_explore,
@@ -343,6 +400,7 @@ pub fn run() {
             commands::git::git_add,
             commands::git::git_status,
             commands::git::git_diff,
+            commands::git::git_checkout_file,
             commands::git::git_show_file,
             commands::team::get_team_status,
             commands::team::team_check_git_installed,
@@ -363,6 +421,8 @@ pub fn run() {
             #[cfg(feature = "p2p")]
             commands::team_p2p::team_remove_member,
             #[cfg(feature = "p2p")]
+            commands::team_p2p::team_update_member_role,
+            #[cfg(feature = "p2p")]
             commands::team_p2p::p2p_check_team_dir,
             #[cfg(feature = "p2p")]
             commands::team_p2p::p2p_create_team,
@@ -372,6 +432,9 @@ pub fn run() {
             commands::team_p2p::p2p_join_drive,
             #[cfg(feature = "p2p")]
             commands::team_p2p::p2p_disconnect_source,
+            #[cfg(feature = "p2p")]
+            commands::team_p2p::p2p_leave_team,
+            commands::team_p2p::p2p_dissolve_team,
             #[cfg(feature = "p2p")]
             commands::team_p2p::p2p_reconnect,
             #[cfg(feature = "p2p")]
@@ -384,6 +447,8 @@ pub fn run() {
             commands::team_p2p::save_p2p_config,
             #[cfg(feature = "p2p")]
             commands::team_p2p::p2p_skills_leaderboard,
+            #[cfg(feature = "p2p")]
+            commands::team_p2p::p2p_save_seed_config,
             commands::deps::check_dependencies,
             commands::deps::install_dependency,
             commands::env_vars::env_var_set,
@@ -395,7 +460,6 @@ pub fn run() {
             commands::local_stats::write_local_stats,
             commands::local_stats::update_local_stats,
             commands::local_stats::reset_local_stats,
-            telemetry::commands::telemetry_get_device_id,
             telemetry::commands::telemetry_get_consent,
             telemetry::commands::telemetry_set_consent,
             telemetry::commands::telemetry_set_feedback,
@@ -435,15 +499,24 @@ pub fn run() {
             commands::team_webdav::webdav_import_config,
             commands::team_webdav::webdav_get_status,
             commands::team_webdav::get_team_mode,
+            commands::team_unified::unified_team_get_members,
+            commands::team_unified::unified_team_add_member,
+            commands::team_unified::unified_team_remove_member,
+            commands::team_unified::unified_team_update_member_role,
+            commands::team_unified::unified_team_get_my_role,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
             let setup_t0 = std::time::Instant::now();
 
+            // Register aptabase here (inside setup) so the Tokio runtime is available
+            // for its internal `tokio::spawn` polling loop.
+            app.handle().plugin(tauri_plugin_aptabase::Builder::new("A-US-9094113207").build())?;
+
             // Start RAG HTTP API server for MCP bridge
             let rag_state_handle = app.handle().state::<commands::knowledge::RagState>();
             let rag_state_for_http = std::sync::Arc::new(rag_state_handle.inner().clone());
-            
+
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = commands::rag_http_server::start_http_server(rag_state_for_http, 13143).await {
                     eprintln!("[RAG HTTP] Failed to start HTTP server: {}", e);
@@ -790,18 +863,30 @@ pub fn run() {
                 });
             }
 
+            // Track app_started (always, regardless of consent)
+            let _ = app.handle().track_event("app_started", Some(serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "platform": std::env::consts::OS,
+            })));
+
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app, _event| {
-            // macOS: clicking the Dock icon when all windows are hidden should show the main window
-            #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = _event {
-                if !has_visible_windows {
-                    let state = _app.state::<commands::spotlight::SpotlightState>();
-                    commands::spotlight::show_main_window(_app.clone(), state);
+        .run(|app, event| {
+            match event {
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { has_visible_windows, .. } => {
+                    if !has_visible_windows {
+                        let state = app.state::<commands::spotlight::SpotlightState>();
+                        commands::spotlight::show_main_window(app.clone(), state);
+                    }
                 }
+                tauri::RunEvent::Exit => {
+                    let _ = app.track_event("app_exited", None);
+                    app.flush_events_blocking();
+                }
+                _ => {}
             }
         });
 }

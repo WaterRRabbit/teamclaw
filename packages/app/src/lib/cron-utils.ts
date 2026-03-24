@@ -199,6 +199,23 @@ export const DELIVERY_CHANNEL_REGISTRY: DeliveryChannelRegistryEntry[] = [
       return to
     },
   },
+  {
+    id: 'wechat',
+    name: 'WeChat',
+    getEnabled: (s) => !!s.wechat?.enabled,
+    getConnected: (s) => s.wechatGatewayStatus?.status === 'connected',
+    fields: [
+      {
+        key: 'userId',
+        label: 'User ID',
+        placeholder: 'e.g., xxx@im.wechat',
+        hint: 'WeChat user ID (from_user_id). Visible in gateway logs after the user sends a message. The gateway must be running and the user must have sent at least one message for delivery to work.',
+        required: true,
+      },
+    ],
+    buildTarget: (_mode, values) => values.userId,
+    parseTarget: (to) => ({ mode: '', values: { userId: to } }),
+  },
 ]
 
 export function getRegistryEntry(channelId: DeliveryChannel): DeliveryChannelRegistryEntry | undefined {
@@ -227,6 +244,8 @@ export interface JobFormState {
   deliveryBestEffort: boolean
   deleteAfterRun: boolean
   runImmediately: boolean
+  useWorktree: boolean
+  worktreeBranch: string
 }
 
 export const defaultFormState: JobFormState = {
@@ -249,6 +268,8 @@ export const defaultFormState: JobFormState = {
   deliveryBestEffort: true,
   deleteAfterRun: false,
   runImmediately: true,
+  useWorktree: false,
+  worktreeBranch: '',
 }
 
 export function jobToFormState(job: CronJob): JobFormState {
@@ -295,6 +316,8 @@ export function jobToFormState(job: CronJob): JobFormState {
     deliveryBestEffort: job.delivery?.bestEffort ?? true,
     deleteAfterRun: job.deleteAfterRun,
     runImmediately: false,
+    useWorktree: job.payload.useWorktree ?? false,
+    worktreeBranch: job.payload.worktreeBranch ?? '',
   }
 }
 
@@ -336,6 +359,8 @@ export function formStateToPayload(form: JobFormState): CronPayload {
     message: form.message,
     model: form.model || undefined,
     timeoutSeconds: form.timeoutSeconds !== 180 ? form.timeoutSeconds : undefined,
+    useWorktree: form.useWorktree || undefined,
+    worktreeBranch: form.useWorktree && form.worktreeBranch ? form.worktreeBranch : undefined,
   }
 }
 

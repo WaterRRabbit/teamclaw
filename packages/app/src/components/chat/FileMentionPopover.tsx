@@ -1,6 +1,7 @@
 import * as React from "react"
 import { File, Folder, Loader2 } from "lucide-react"
 import { useWorkspaceStore } from "@/stores/workspace"
+import { useTeamModeStore } from "@/stores/team-mode"
 import { isTauri } from "@/lib/utils"
 import { cn } from "@/lib/utils"
 
@@ -12,11 +13,20 @@ interface FileMentionPopoverProps {
   onSelect: (relativePath: string) => void
 }
 
-const IGNORED_NAMES = new Set([
+const ALWAYS_IGNORED_NAMES = new Set([
   "node_modules", ".git", ".DS_Store", "dist", "build", ".next",
   "__pycache__", ".cache", ".turbo", "target", ".idea", ".vscode",
-  ".teamclaw", ".opencode", ".ruff_cache",
+  ".ruff_cache",
 ])
+
+const DEV_ONLY_NAMES = new Set([".teamclaw", ".opencode"])
+
+function isIgnoredName(name: string): boolean {
+  if (useTeamModeStore.getState().devUnlocked) return false
+  if (ALWAYS_IGNORED_NAMES.has(name)) return true
+  if (DEV_ONLY_NAMES.has(name)) return true
+  return false
+}
 
 interface FlatEntry {
   name: string
@@ -54,7 +64,7 @@ async function scanRecursive(
   }
 
   const sorted = [...raw]
-    .filter(e => e.name && !IGNORED_NAMES.has(e.name))
+    .filter(e => e.name && !isIgnoredName(e.name))
     .sort((a, b) => {
       if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
       return (a.name || "").localeCompare(b.name || "")

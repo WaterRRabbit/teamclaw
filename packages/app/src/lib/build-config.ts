@@ -7,6 +7,7 @@ export interface ChannelsFeatureConfig {
   email: boolean
   kook: boolean
   wecom: boolean
+  wechat: boolean
 }
 
 export interface UpdaterConfig {
@@ -23,6 +24,8 @@ export interface BuildConfig {
       supportsVision?: boolean
     }
     lockLlmConfig: boolean
+    /** Pre-configured seed node URL. If set, pre-fills join/owner seed forms. */
+    seedUrl?: string
   }
   app: {
     name: string
@@ -47,6 +50,7 @@ const allChannelsEnabled: ChannelsFeatureConfig = {
   email: true,
   kook: true,
   wecom: true,
+  wechat: true,
 }
 
 /**
@@ -56,7 +60,7 @@ export function resolveChannelsConfig(channels: boolean | ChannelsFeatureConfig)
   if (typeof channels === 'boolean') {
     return channels
       ? { ...allChannelsEnabled }
-      : { discord: false, feishu: false, email: false, kook: false, wecom: false }
+      : { discord: false, feishu: false, email: false, kook: false, wecom: false, wechat: false }
   }
   return channels
 }
@@ -91,7 +95,6 @@ const fallback: BuildConfig = {
   defaults: { locale: 'zh-CN', theme: 'system' },
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function deepMerge(base: any, override: any): any {
   if (!override) return base
   const result = { ...base }

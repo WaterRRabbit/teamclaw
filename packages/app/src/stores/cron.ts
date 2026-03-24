@@ -18,10 +18,12 @@ export interface CronPayload {
   message: string
   model?: string // "provider/model"
   timeoutSeconds?: number // Max seconds for AI to respond (default: 180)
+  useWorktree?: boolean
+  worktreeBranch?: string
 }
 
 export type DeliveryMode = 'announce' | 'none'
-export type DeliveryChannel = 'discord' | 'feishu' | 'email' | 'kook'
+export type DeliveryChannel = 'discord' | 'feishu' | 'email' | 'kook' | 'wechat'
 
 export interface CronDelivery {
   mode: DeliveryMode
@@ -57,6 +59,7 @@ export interface CronRunRecord {
   responseSummary?: string
   deliveryStatus?: string
   error?: string
+  worktreePath?: string
 }
 
 export interface CreateCronJobRequest {
@@ -88,6 +91,11 @@ interface CronState {
   error: string | null
   isInitialized: boolean
 
+  // All session IDs created by cron (for filtering in session list)
+  cronSessionIds: Set<string>
+  // Toggle to show only cron sessions in the session list
+  showCronSessions: boolean
+
   // Run history for the currently viewed job
   selectedJobId: string | null
   runs: CronRunRecord[]
@@ -97,6 +105,7 @@ interface CronState {
   init: () => Promise<void>
   reinit: () => Promise<void>
   loadJobs: () => Promise<void>
+  loadCronSessionIds: () => Promise<void>
   addJob: (request: CreateCronJobRequest) => Promise<CronJob>
   updateJob: (request: UpdateCronJobRequest) => Promise<CronJob>
   removeJob: (jobId: string) => Promise<void>
@@ -106,6 +115,7 @@ interface CronState {
   refreshDelivery: () => Promise<void>
   clearError: () => void
   setSelectedJobId: (jobId: string | null) => void
+  toggleShowCronSessions: () => void
 }
 
 export const useCronStore = create<CronState>((set, get) => ({
@@ -113,6 +123,9 @@ export const useCronStore = create<CronState>((set, get) => ({
   isLoading: false,
   error: null,
   isInitialized: false,
+
+  cronSessionIds: new Set<string>(),
+  showCronSessions: false,
 
   selectedJobId: null,
   runs: [],
@@ -127,7 +140,7 @@ export const useCronStore = create<CronState>((set, get) => ({
     try {
       await invoke('cron_init')
       set({ isInitialized: true })
-      await get().loadJobs()
+      await Promise.all([get().loadJobs(), get().loadCronSessionIds()])
     } catch (error) {
       console.error('[Cron] Init failed:', error)
       set({ error: error instanceof Error ? error.message : String(error) })
@@ -140,7 +153,7 @@ export const useCronStore = create<CronState>((set, get) => ({
       set({ isInitialized: false })
       await invoke('cron_init')
       set({ isInitialized: true })
-      await get().loadJobs()
+      await Promise.all([get().loadJobs(), get().loadCronSessionIds()])
     } catch (error) {
       console.error('[Cron] Re-init failed:', error)
       set({ error: error instanceof Error ? error.message : String(error) })
@@ -207,6 +220,15 @@ export const useCronStore = create<CronState>((set, get) => ({
     }
   },
 
+  loadCronSessionIds: async () => {
+    try {
+      const ids = await invoke<string[]>('cron_get_all_session_ids')
+      set({ cronSessionIds: new Set(ids) })
+    } catch (error) {
+      console.error('[Cron] Failed to load cron session IDs:', error)
+    }
+  },
+
   loadRuns: async (jobId: string, limit?: number) => {
     set({ runsLoading: true, selectedJobId: jobId })
     try {
@@ -231,6 +253,7 @@ export const useCronStore = create<CronState>((set, get) => ({
 
   clearError: () => set({ error: null }),
   setSelectedJobId: (jobId: string | null) => set({ selectedJobId: jobId }),
+  toggleShowCronSessions: () => set(s => ({ showCronSessions: !s.showCronSessions })),
 }))
 
 // ==================== Helpers ====================
@@ -318,6 +341,8 @@ export function getChannelDisplayName(channel: DeliveryChannel): string {
       return 'Email'
     case 'kook':
       return 'KOOK'
+    case 'wechat':
+      return 'WeChat'
     default:
       return channel
   }

@@ -37,6 +37,7 @@ export const LLMSection = React.memo(function LLMSection() {
   const { t } = useTranslation()
   const teamMode = useTeamModeStore((s) => s.teamMode)
   const teamModelConfig = useTeamModeStore((s) => s.teamModelConfig)
+  const devUnlocked = useTeamModeStore((s) => s.devUnlocked)
   const providers = useProviderStore((s) => s.providers)
   const providersLoading = useProviderStore((s) => s.providersLoading)
   const configuredProviders = useProviderStore((s) => s.configuredProviders)
@@ -298,7 +299,7 @@ export const LLMSection = React.memo(function LLMSection() {
     }
   }
 
-  if (teamMode) {
+  if (teamMode && !devUnlocked) {
     return (
       <div className="space-y-6">
         <SectionHeader

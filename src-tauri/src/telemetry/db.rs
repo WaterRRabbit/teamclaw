@@ -11,7 +11,7 @@ pub struct MessageFeedback {
     pub id: String,
     pub session_id: String,
     pub message_id: String,
-    pub rating: String, // "positive" | "negative"
+    pub rating: String,           // "positive" | "negative"
     pub star_rating: Option<i64>, // 1-5 star rating
     pub created_at: String,
 }
@@ -33,11 +33,11 @@ pub struct SessionReport {
     pub message_count: i64,
     pub tool_call_count: i64,
     pub tool_error_count: i64,
-    pub tool_calls: Option<String>,  // JSON string
-    pub scores: Option<String>,      // JSON string
+    pub tool_calls: Option<String>, // JSON string
+    pub scores: Option<String>,     // JSON string
     pub model_id: Option<String>,
     pub provider_id: Option<String>,
-    pub agent: Option<String>,       // Agent/skill name
+    pub agent: Option<String>, // Agent/skill name
     pub created_at: String,
 }
 
@@ -110,18 +110,6 @@ impl TelemetryDb {
     /// Run database migrations (idempotent).
     pub async fn migrate(&self) -> Result<(), String> {
         let conn = self.conn.lock().await;
-
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS device (
-                id TEXT PRIMARY KEY,
-                app_version TEXT NOT NULL,
-                platform TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )",
-            (),
-        )
-        .await
-        .map_err(|e| format!("Failed to create device table: {}", e))?;
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS message_feedbacks (
@@ -216,43 +204,6 @@ impl TelemetryDb {
         Ok(())
     }
 
-    // ─── Device ──────────────────────────────────────────────────────────
-
-    /// Get or create the device ID.
-    pub async fn get_device_id(&self) -> Result<String, String> {
-        let conn = self.conn.lock().await;
-
-        // Try to get existing device ID
-        let mut rows = conn
-            .query("SELECT id FROM device LIMIT 1", ())
-            .await
-            .map_err(|e| format!("Failed to query device: {}", e))?;
-
-        if let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| format!("Failed to read device row: {}", e))?
-        {
-            return row
-                .get::<String>(0)
-                .map_err(|e| format!("Failed to read device id: {}", e));
-        }
-
-        // Generate a new device ID
-        let device_id = nanoid::nanoid!();
-        let app_version = env!("CARGO_PKG_VERSION").to_string();
-        let platform = std::env::consts::OS.to_string();
-
-        conn.execute(
-            "INSERT INTO device (id, app_version, platform) VALUES (?1, ?2, ?3)",
-            params![device_id.clone(), app_version, platform],
-        )
-        .await
-        .map_err(|e| format!("Failed to insert device: {}", e))?;
-
-        Ok(device_id)
-    }
-
     // ─── Consent ─────────────────────────────────────────────────────────
 
     /// Get the current consent state.
@@ -304,7 +255,12 @@ impl TelemetryDb {
             "INSERT INTO message_feedbacks (id, session_id, message_id, rating)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(session_id, message_id) DO UPDATE SET rating = ?4, synced_at = NULL",
-            params![id, session_id.to_string(), message_id.to_string(), rating.to_string()],
+            params![
+                id,
+                session_id.to_string(),
+                message_id.to_string(),
+                rating.to_string()
+            ],
         )
         .await
         .map_err(|e| format!("Failed to set feedback: {}", e))?;
@@ -346,11 +302,7 @@ impl TelemetryDb {
     }
 
     /// Remove a feedback for a specific message.
-    pub async fn remove_feedback(
-        &self,
-        session_id: &str,
-        message_id: &str,
-    ) -> Result<(), String> {
+    pub async fn remove_feedback(&self, session_id: &str, message_id: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
         conn.execute(
             "DELETE FROM message_feedbacks WHERE session_id = ?1 AND message_id = ?2",
@@ -375,7 +327,12 @@ impl TelemetryDb {
             "INSERT INTO message_feedbacks (id, session_id, message_id, rating, star_rating)
              VALUES (?1, ?2, ?3, 'positive', ?4)
              ON CONFLICT(session_id, message_id) DO UPDATE SET star_rating = ?4, synced_at = NULL",
-            params![id, session_id.to_string(), message_id.to_string(), star_rating],
+            params![
+                id,
+                session_id.to_string(),
+                message_id.to_string(),
+                star_rating
+            ],
         )
         .await
         .map_err(|e| format!("Failed to set star rating: {}", e))?;
@@ -471,11 +428,7 @@ impl TelemetryDb {
     }
 
     /// Get session reports with pagination.
-    pub async fn get_reports(
-        &self,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<SessionReport>, String> {
+    pub async fn get_reports(&self, limit: i64, offset: i64) -> Result<Vec<SessionReport>, String> {
         let conn = self.conn.lock().await;
         let mut rows = conn
             .query(

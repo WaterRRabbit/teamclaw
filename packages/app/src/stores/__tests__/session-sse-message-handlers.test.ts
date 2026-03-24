@@ -34,13 +34,6 @@ vi.mock('@/lib/insert-message-sorted', () => ({
   insertMessageSorted: (msgs: unknown[], msg: unknown) => [...msgs, msg],
 }))
 
-// Mock localStorage for memory extraction code
-vi.stubGlobal('localStorage', {
-  getItem: vi.fn(() => null),
-  setItem: vi.fn(),
-  removeItem: vi.fn(),
-})
-
 import { createMessageHandlers } from '@/stores/session-sse-message-handlers'
 import { sessionLookupCache } from '@/stores/session-cache'
 import { externalReloadingSessions } from '@/stores/session-internals'

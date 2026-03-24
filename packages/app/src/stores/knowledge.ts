@@ -78,9 +78,6 @@ export interface RagConfig {
   autoInjectThreshold: number
   autoInjectTopK: number
   autoInjectMaxTokens: number
-  // Long-term Memory
-  memoryEnabled: boolean
-  memoryAutoExtract: boolean
 }
 
 // ============================================================================

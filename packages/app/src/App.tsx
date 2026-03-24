@@ -41,6 +41,8 @@ import {
   useOpenCodeInit,
   useChannelGatewayInit,
   useGitReposInit,
+  useCronInit,
+
   useExternalLinkHandler,
   useTauriBodyClass,
   useSetupGuide,
@@ -54,6 +56,8 @@ import {
   useFileTabSync,
   useResizablePanels,
 } from "@/hooks/useFileEditorState";
+import { useMCPFileWatcher } from "@/hooks/useMCPFileWatcher";
+import { useTeamModeStore } from "@/stores/team-mode";
 
 import { AppSidebar, SidebarIconGroup } from "@/components/app-sidebar";
 import { ChatPanel } from "@/components/chat/ChatPanel";
@@ -65,6 +69,7 @@ import { Settings } from "@/components/settings";
 import { SetupGuide } from "@/components/SetupGuide";
 import { TelemetryConsentDialog } from "@/components/telemetry/TelemetryConsentDialog";
 import { WorkspacePrompt } from "@/components/workspace";
+import { WorkspaceTypeDialog } from "@/components/workspace/WorkspaceTypeDialog";
 import { useSessionStore } from "@/stores/session";
 import { useUIStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
@@ -427,6 +432,9 @@ function AppContent() {
   const fileModeRightTab = useUIStore((s) => s.fileModeRightTab);
   const setFileModeRightTab = useUIStore((s) => s.setFileModeRightTab);
   const advancedMode = useUIStore((s) => s.advancedMode);
+  const openSettings = useUIStore((s) => s.openSettings);
+  const isNewWorkspace = useWorkspaceStore((s) => s.isNewWorkspace);
+  const setIsNewWorkspace = useWorkspaceStore((s) => s.setIsNewWorkspace);
   const { state } = useSidebar();
   const isCollapsed = state === "collapsed";
   const needsTrafficLightSpacer = useNeedsTrafficLightSpacer();
@@ -436,6 +444,8 @@ function AppContent() {
   const { openCodeError, setOpenCodeError } = useOpenCodeInit();
   useChannelGatewayInit();
   useGitReposInit();
+  useCronInit();
+  useMCPFileWatcher(workspacePath);
   useExternalLinkHandler();
   useLayoutModeShortcut();
   usePanelAutoOpen();
@@ -766,6 +776,14 @@ function AppContent() {
           </div>
         </div>
         <VoiceInputFloatingButton />
+        <WorkspaceTypeDialog
+          open={isNewWorkspace}
+          onSelectPersonal={() => setIsNewWorkspace(false)}
+          onSelectTeam={() => {
+            setIsNewWorkspace(false);
+            openSettings('team');
+          }}
+        />
       </div>
     );
   }
@@ -893,6 +911,14 @@ function AppContent() {
         </div>
       </SidebarInset>
       <VoiceInputFloatingButton />
+      <WorkspaceTypeDialog
+        open={isNewWorkspace}
+        onSelectPersonal={() => setIsNewWorkspace(false)}
+        onSelectTeam={() => {
+          setIsNewWorkspace(false);
+          openSettings('team');
+        }}
+      />
     </>
   );
 }
@@ -919,6 +945,7 @@ function App() {
   const openCodeReady = useWorkspaceStore((s) => s.openCodeReady);
   const { showSetupGuide, dependencies, handleRecheck, handleSetupContinue } = useSetupGuide(openCodeReady);
   const { showConsentDialog, setShowConsentDialog } = useTelemetryConsent(showSetupGuide);
+  const devUnlocked = useTeamModeStore(s => s.devUnlocked)
 
   if (spotlightMode) {
     return (
@@ -968,6 +995,11 @@ function App() {
     <div className="h-screen w-screen rounded-2xl overflow-hidden bg-background">
       <SSEProvider />
       {mainContent}
+      {devUnlocked && (
+        <div className="fixed bottom-2 right-2 z-50 text-[10px] font-mono font-bold text-orange-500 bg-orange-500/10 border border-orange-500/30 px-1.5 py-0.5 rounded pointer-events-none">
+          DEV
+        </div>
+      )}
     </div>
   ) : (
     <>

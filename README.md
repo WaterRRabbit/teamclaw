@@ -98,13 +98,9 @@ pnpm install
 # 2. Download OpenCode sidecar binary (required, not in git)
 ./src-tauri/binaries/download-opencode.sh
 
-# 3. Build MCP sidecar binaries (required for tauri dev/build)
-./build-bridge.sh
-cp src-tauri/binaries/rag-mcp-bridge src-tauri/binaries/rag-mcp-bridge-$(rustc -vV | grep '^host:' | awk '{print $2}')
-
-cargo build --release --manifest-path autoui-mcp/Cargo.toml
-cp autoui-mcp/target/release/autoui-mcp src-tauri/binaries/autoui-mcp-server-$(rustc -vV | grep '^host:' | awk '{print $2}')
-chmod +x src-tauri/binaries/autoui-mcp-server-*
+# 3. (Optional) Build MCP sidecars for OpenCode — see src-tauri/binaries/README.md
+#    Tauri externalBin currently only bundles OpenCode; rag-mcp-server / autoui-mcp-server
+#    are for opencode.json if you use local MCP binaries.
 
 # 4. Start Tauri dev
 pnpm tauri dev
@@ -112,7 +108,7 @@ pnpm tauri dev
 
 After launching, select a workspace directory in the TeamClaw UI.
 
-> **MCP binaries**: `rag-mcp-bridge` bridges knowledge base search; `autoui-mcp-server` provides desktop automation. Both must be built beforehand, or `pnpm tauri dev` will fail due to missing `binaries/rag-mcp-bridge-<target>` and `binaries/autoui-mcp-server-<target>`. See [src-tauri/binaries/README.md](src-tauri/binaries/README.md) for details.
+> **MCP binaries**: For local RAG MCP use the standalone `rag-mcp-server` build (not an in-app HTTP bridge). Optional sidecar build steps are in [src-tauri/binaries/README.md](src-tauri/binaries/README.md).
 
 ### Update OpenCode
 

@@ -222,7 +222,16 @@ export function TeamGitConfig() {
     setErrorMessage(null)
 
     try {
-      await tauriInvoke<TeamGitResult>('team_sync_repo')
+      const result = await tauriInvoke<TeamGitResult>('team_sync_repo')
+
+      if (!result.success) {
+        console.warn('Team sync skipped:', result.message)
+        if (updateUi) {
+          setErrorMessage(result.message)
+          setState('connected')
+        }
+        return
+      }
 
       window.dispatchEvent(new CustomEvent('teamclaw-team-synced'))
 

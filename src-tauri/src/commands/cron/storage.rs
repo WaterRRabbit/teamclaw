@@ -43,12 +43,16 @@ impl CronStorage {
 
     /// Get the jobs file path
     fn jobs_path(workspace: &str) -> PathBuf {
-        PathBuf::from(workspace).join(crate::commands::TEAMCLAW_DIR).join("cron-jobs.json")
+        PathBuf::from(workspace)
+            .join(crate::commands::TEAMCLAW_DIR)
+            .join("cron-jobs.json")
     }
 
     /// Get the runs directory path
     fn runs_dir(workspace: &str) -> PathBuf {
-        PathBuf::from(workspace).join(crate::commands::TEAMCLAW_DIR).join("cron-runs")
+        PathBuf::from(workspace)
+            .join(crate::commands::TEAMCLAW_DIR)
+            .join("cron-runs")
     }
 
     /// Get the run history file for a specific job
@@ -316,6 +320,45 @@ impl CronStorage {
                 }
             }
         }
+    }
+
+    /// Collect all session IDs created by cron jobs (across all jobs).
+    /// Used by the frontend to filter cron sessions from the session list.
+    pub async fn get_all_session_ids(&self) -> Vec<String> {
+        let workspace = self.workspace_path.read().await;
+        let Some(ws) = workspace.as_ref() else {
+            return Vec::new();
+        };
+
+        let runs_dir = Self::runs_dir(ws);
+        if !runs_dir.exists() {
+            return Vec::new();
+        }
+
+        let mut session_ids = std::collections::HashSet::new();
+
+        if let Ok(entries) = std::fs::read_dir(&runs_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    for line in content.lines() {
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        if let Ok(record) = serde_json::from_str::<CronRunRecord>(line) {
+                            if let Some(sid) = record.session_id {
+                                session_ids.insert(sid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        session_ids.into_iter().collect()
     }
 
     /// Get run history for a job (most recent first, with optional limit)

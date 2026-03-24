@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { UNSUPPORTED_BINARY_EXTENSIONS } from "@/components/viewers/UnsupportedFileViewer";
 import { isTauri } from '@/lib/utils'
 import { ensureGitignoreEntries } from '@/lib/gitignore-manager'
+import { useTeamModeStore } from './team-mode'
 
 // Directories to hide from file tree (system directories)
 const HIDDEN_DIRECTORIES = new Set(['.teamclaw', '.opencode'])
@@ -106,6 +107,10 @@ interface WorkspaceState {
   // Undo stack
   undoStack: UndoOperation[];
 
+  // New workspace detection
+  isNewWorkspace: boolean;
+  setIsNewWorkspace: (value: boolean) => void;
+
   // Actions
   setWorkspace: (path: string) => Promise<void>;
   clearWorkspace: () => Promise<void>;
@@ -194,6 +199,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   targetHeading: null,
   focusedPath: null,
   undoStack: [],
+  isNewWorkspace: false,
+  setIsNewWorkspace: (value: boolean) => set({ isNewWorkspace: value }),
 
   // Set workspace and load file tree
   setWorkspace: async (path: string) => {
@@ -214,6 +221,21 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       await stopWatching(currentPath);
     }
 
+    // Pre-cache Tauri fs modules so the .teamclaw check after set() runs
+    // without extra async import delay (avoids race with OpenCode preloader)
+    let cachedJoin: typeof import("@tauri-apps/api/path")["join"] | null = null;
+    let cachedExists: typeof import("@tauri-apps/plugin-fs")["exists"] | null = null;
+    if (isTauri()) {
+      try {
+        const [pathMod, fsMod] = await Promise.all([
+          import("@tauri-apps/api/path"),
+          import("@tauri-apps/plugin-fs"),
+        ]);
+        cachedJoin = pathMod.join;
+        cachedExists = fsMod.exists;
+      } catch { /* ignore */ }
+    }
+
     set({
       isLoadingWorkspace: true,
       openCodeReady: false,
@@ -232,6 +254,19 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       focusedPath: null,
       undoStack: [],
     });
+
+    // Check if this is a new workspace (no .teamclaw directory yet)
+    // Runs right after set() using pre-cached imports to minimize delay
+    // before OpenCode server creates .teamclaw
+    if (cachedJoin && cachedExists) {
+      try {
+        const teamclawDir = await cachedJoin(expandedPath, ".teamclaw");
+        const dirExists = await cachedExists(teamclawDir);
+        if (!dirExists) {
+          set({ isNewWorkspace: true });
+        }
+      } catch { /* ignore */ }
+    }
 
     // Reset advancedMode to default until new workspace config is loaded
     try {
@@ -370,7 +405,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       console.log("[Workspace] Found", entries.length, "entries");
 
       const nodes: FileNode[] = entries
-        .filter(entry => !HIDDEN_DIRECTORIES.has(entry.name))
+        .filter(entry => useTeamModeStore.getState().devUnlocked || !HIDDEN_DIRECTORIES.has(entry.name))
         .map(
           (entry) =>
             ({

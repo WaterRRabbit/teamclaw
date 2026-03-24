@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
 
+// Polyfill browser APIs missing in jsdom
+globalThis.ResizeObserver = vi.fn().mockImplementation(() => ({
+  observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn(),
+}))
+
 // Mock everything App depends on
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (k: string, d?: string) => d ?? k, i18n: { language: 'en', changeLanguage: vi.fn() } }),
@@ -17,6 +22,8 @@ vi.mock('@/hooks/useAppInit', () => ({
   useOpenCodeInit: () => ({ openCodeError: null, setOpenCodeError: vi.fn() }),
   useChannelGatewayInit: vi.fn(),
   useGitReposInit: vi.fn(),
+  useCronInit: vi.fn(),
+  useOssSyncInit: vi.fn(),
   useExternalLinkHandler: vi.fn(),
   useTauriBodyClass: vi.fn(),
   useSetupGuide: () => ({ showSetupGuide: false, dependencies: [], handleRecheck: vi.fn(), handleSetupContinue: vi.fn() }),
@@ -24,6 +31,7 @@ vi.mock('@/hooks/useAppInit', () => ({
   useOpenCodePreload: vi.fn(),
   useLayoutModeShortcut: vi.fn(),
 }))
+vi.mock('@/hooks/useMCPFileWatcher', () => ({ useMCPFileWatcher: vi.fn() }))
 vi.mock('@/hooks/useFileEditorState', () => ({
   usePanelAutoOpen: vi.fn(),
   useLayoutModePanelSync: vi.fn(),
@@ -86,13 +94,16 @@ vi.mock('@/stores/tabs', () => ({
     vi.fn((sel: (s: any) => any) => sel({ tabs: [], activeTabId: null })),
     { getState: () => ({ openTab: vi.fn(), closeTab: vi.fn(), tabs: [], activeTabId: null }) }
   ),
-  selectActiveTab: (s: any) => null,
+  selectActiveTab: (_s: any) => null,
 }))
 vi.mock('@/components/tab-bar/TabBar', () => ({ TabBar: () => null }))
 vi.mock('@/components/tab-bar/TabContentRenderer', () => ({ TabContentRenderer: () => null }))
 vi.mock('@/components/tab-bar/WebViewToolbar', () => ({ WebViewToolbar: () => null }))
 vi.mock('@/lib/webview-utils', () => ({ urlToLabel: (u: string) => u }))
 vi.mock('@/lib/opencode/client', () => ({ initOpenCodeClient: vi.fn() }))
+vi.mock('@/stores/team-mode', () => ({
+  useTeamModeStore: vi.fn((sel: (s: any) => any) => sel({ devUnlocked: false, teamMode: false })),
+}))
 vi.mock('@/lib/opencode/preloader', () => ({ startOpenCode: vi.fn(), clearPreload: vi.fn() }))
 vi.mock('@/components/ui/sidebar', () => ({
   SidebarInset: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,

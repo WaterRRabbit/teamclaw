@@ -34,6 +34,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { FileInputButton } from "./FileInputButton";
 import { MessageQueueDisplay } from "./MessageQueueDisplay";
+import { ContextUsageBadge } from "./ContextUsageBadge";
 import { type QueuedMessage, useSessionStore } from "@/stores/session";
 import { useVoiceInputStore } from "@/stores/voice-input";
 import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
@@ -151,6 +152,7 @@ export function ChatInputArea({
 
   // Team mode
   const teamMode = useTeamModeStore(s => s.teamMode);
+  const devUnlocked = useTeamModeStore(s => s.devUnlocked);
 
   // Model selector
   const [modelSelectorOpen, setModelSelectorOpen] = React.useState(false);
@@ -408,7 +410,7 @@ export function ChatInputArea({
                 Plan
               </Button>
 
-              {!teamMode && selectedModelOption?.provider !== 'team' && (
+              {(!teamMode || devUnlocked) && (
                 <ModelSelector
                   open={modelSelectorOpen}
                   onOpenChange={setModelSelectorOpen}
@@ -479,11 +481,14 @@ export function ChatInputArea({
               )}
             </PromptInputTools>
 
-            <PromptInputSubmit
-              disabled={!inputValue.trim() && attachedFiles.length === 0 && imageFiles.length === 0}
-              status={isStreaming ? "streaming" : "ready"}
-              onStop={onAbort}
-            />
+            <div className="flex items-center gap-2">
+              <ContextUsageBadge />
+              <PromptInputSubmit
+                disabled={!inputValue.trim() && attachedFiles.length === 0 && imageFiles.length === 0}
+                status={isStreaming ? "streaming" : "ready"}
+                onStop={onAbort}
+              />
+            </div>
           </PromptInputFooter>
         </PromptInput>
       </div>

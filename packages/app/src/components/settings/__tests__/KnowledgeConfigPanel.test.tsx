@@ -51,8 +51,6 @@ const baseConfig = {
   autoInjectThreshold: 0.7,
   autoInjectTopK: 3,
   autoInjectMaxTokens: 2000,
-  memoryEnabled: false,
-  memoryAutoExtract: false,
 }
 
 describe('KnowledgeConfigPanel', () => {

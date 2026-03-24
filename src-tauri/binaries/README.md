@@ -1,14 +1,14 @@
 # TeamClaw MCP 服务器二进制文件
 
-此目录包含用于 OpenCode MCP 集成的预编译二进制文件。Tauri 构建需要以下文件（`tauri.conf.json` 的 `externalBin`）：
+此目录包含用于 OpenCode MCP 集成的预编译二进制文件。`tauri.conf.json` 的 `externalBin` **目前仅打包** OpenCode；下表中后两项为可选本地 MCP，供 `opencode.json` 使用。
 
-| 所需文件 | 用途 |
-|----------|------|
-| `opencode-<target>` | OpenCode 侧进程，由下载脚本获取 |
-| `rag-mcp-server-<target>` | 独立 RAG MCP Server（libSQL 向量检索） |
-| `autoui-mcp-server-<target>` | 桌面自动化 MCP Server |
+| 文件 | 用途 |
+|------|------|
+| `opencode-<target>` | OpenCode 侧进程（**必需**，由下载脚本获取） |
+| `rag-mcp-server-<target>` | 独立 RAG MCP Server（可选） |
+| `autoui-mcp-server-<target>` | 桌面自动化 MCP Server（可选） |
 
-`<target>` 为 Rust target triple，如 `aarch64-apple-darwin`、`x86_64-pc-windows-msvc`（Windows 下带 `.exe`）。缺失任一文件会导致 `pnpm tauri dev` 失败。
+`<target>` 为 Rust target triple，如 `aarch64-apple-darwin`、`x86_64-pc-windows-msvc`（Windows 下带 `.exe`）。缺少 `opencode-<target>` 会导致 `pnpm tauri dev` 失败。
 
 ## OpenCode 下载
 
@@ -55,16 +55,11 @@
 
 支持 debug 构建（Unix: `--debug`，Windows: `-Debug`）。
 
-### 其他构建方式（rag-mcp-bridge / autoui-mcp）
+### 其他构建方式（autoui-mcp）
 
-若使用 rag-mcp-bridge 或 autoui-mcp crate，从项目根目录执行：
+若使用 autoui-mcp crate，从项目根目录执行：
 
 ```bash
-# 1. rag-mcp-bridge
-./build-bridge.sh
-cp src-tauri/binaries/rag-mcp-bridge src-tauri/binaries/rag-mcp-bridge-$(rustc -vV | grep '^host:' | awk '{print $2}')
-
-# 2. autoui-mcp-server（来自 autoui-mcp crate）
 cargo build --release --manifest-path autoui-mcp/Cargo.toml
 cp autoui-mcp/target/release/autoui-mcp src-tauri/binaries/autoui-mcp-server-$(rustc -vV | grep '^host:' | awk '{print $2}')
 chmod +x src-tauri/binaries/autoui-mcp-server-*
@@ -77,11 +72,6 @@ chmod +x src-tauri/binaries/autoui-mcp-server-*
 ### opencode
 - **用途**: OpenCode 侧进程，由下载脚本获取
 - **构建**: 见上方「OpenCode 下载」
-
-### rag-mcp-bridge
-- **用途**: 桥接知识库搜索，通过 HTTP 调用 TeamClaw 后端
-- **源码**: `rag-mcp-bridge/`
-- **构建**: `./build-bridge.sh`（需再复制到带 target triple 的文件名）
 
 ### rag-mcp-server
 - **用途**: 独立 RAG MCP Server（libSQL 向量检索），CI 构建用
@@ -107,19 +97,20 @@ Windows 下为 `<服务名>-<target-triple>.exe`。示例:
 
 ## OpenCode 配置
 
-`opencode.json` 中 RAG 使用 `rag-mcp-bridge` 或 `rag-mcp-server`，autoui 可用 `pnpm dlx autoui-mcp@latest` 或本地二进制。本地 rag-mcp-bridge 路径示例：
+`opencode.json` 中 RAG 请使用独立 `rag-mcp-server`（TeamClaw 已不再内嵌供 bridge 使用的 HTTP API）。本地二进制路径示例：
 
 ```json
 {
   "mcp": {
     "rag": {
       "type": "local",
-      "command": ["./src-tauri/binaries/rag-mcp-bridge"],
-      "environment": { "TEAMCLAW_TAURI_PORT": "13143", ... }
+      "command": ["./src-tauri/binaries/rag-mcp-server-<target-triple>"]
     }
   }
 }
 ```
+
+autoui 可用 `pnpm dlx autoui-mcp@latest` 或按上文构建的本地二进制。
 
 ## 跨平台构建
 
@@ -127,6 +118,5 @@ Windows 下为 `<服务名>-<target-triple>.exe`。示例:
 
 ## 许可证
 
-- rag-mcp-bridge: MIT License
 - autoui-mcp: MIT License
 - rag-mcp-server: MIT License

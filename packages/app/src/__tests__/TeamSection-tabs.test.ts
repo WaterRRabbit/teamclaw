@@ -14,12 +14,13 @@ vi.mock('react-i18next', () => ({
 }))
 
 const mockInvoke = vi.fn(async (cmd: string) => {
-  if (cmd === 'team_check_git_installed') return { installed: true, version: '2.40.0' }
-  if (cmd === 'get_team_config') return null
+  if (cmd === 'p2p_sync_status') return null
+  if (cmd === 'webdav_get_status') return null
   if (cmd === 'get_device_info') return { nodeId: 'test-node', platform: 'macos', arch: 'aarch64', hostname: 'test-mac' }
   if (cmd === 'get_p2p_config') return null
-  if (cmd === 'p2p_sync_status') return null
   if (cmd === 'p2p_reconnect') return null
+  if (cmd === 'unified_team_get_members') return []
+  if (cmd === 'unified_team_get_my_role') return null
   return null
 })
 
@@ -28,65 +29,92 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: mockInvoke,
 }))
 
+// Mock Tauri event API to prevent transformCallback errors
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async () => () => {}),
+}))
+
+// Mock plugin-fs to prevent import errors
+vi.mock('@tauri-apps/plugin-fs', () => ({
+  readTextFile: vi.fn(async () => ''),
+  exists: vi.fn(async () => false),
+}))
+
 // Mock window.__TAURI__ to simulate desktop environment
 beforeEach(() => {
   vi.clearAllMocks()
   ;(window as unknown as { __TAURI__: unknown }).__TAURI__ = {}
   ;(window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
     invoke: mockInvoke,
+    transformCallback: vi.fn((_callback: unknown) => {
+      const id = Math.random()
+      return id
+    }),
   }
 })
 
 describe('TeamSection Tab Switcher', () => {
-  it('renders Git and P2P tabs', async () => {
+  it('renders S3, P2P and WebDAV tabs', async () => {
     const { TeamSection } = await import('../components/settings/TeamSection')
 
     await act(async () => {
       render(React.createElement(TeamSection))
     })
 
-    expect(screen.getByRole('tab', { name: /git/i })).toBeDefined()
-    expect(screen.getByRole('tab', { name: /p2p/i })).toBeDefined()
+    // Current UI has S3 云同步, P2P, and WebDAV tabs
+    const tabs = screen.getAllByRole('tab')
+    expect(tabs.length).toBe(3)
+    expect(tabs.some(t => t.textContent?.includes('S3'))).toBe(true)
+    expect(tabs.some(t => t.textContent?.includes('P2P'))).toBe(true)
+    expect(tabs.some(t => t.textContent?.includes('WebDAV'))).toBe(true)
   })
 
-  it('defaults to P2P tab', async () => {
+  it('defaults to S3/OSS tab', async () => {
     const { TeamSection } = await import('../components/settings/TeamSection')
 
     await act(async () => {
       render(React.createElement(TeamSection))
     })
 
-    const p2pTab = screen.getByRole('tab', { name: /p2p/i })
+    const tabs = screen.getAllByRole('tab')
+    const ossTab = tabs.find(t => t.textContent?.includes('S3'))
+    expect(ossTab).toBeDefined()
+    expect(ossTab!.getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('switches to P2P tab on click', async () => {
+    const { TeamSection } = await import('../components/settings/TeamSection')
+
+    await act(async () => {
+      render(React.createElement(TeamSection))
+    })
+
+    const tabs = screen.getAllByRole('tab')
+    const p2pTab = tabs.find(t => t.textContent?.includes('P2P'))!
+    const ossTab = tabs.find(t => t.textContent?.includes('S3'))!
+
+    fireEvent.click(p2pTab)
+
     expect(p2pTab.getAttribute('aria-selected')).toBe('true')
+    expect(ossTab.getAttribute('aria-selected')).toBe('false')
   })
 
-  it('switches to Git tab on click', async () => {
+  it('preserves S3 tab content when switching back', async () => {
     const { TeamSection } = await import('../components/settings/TeamSection')
 
     await act(async () => {
       render(React.createElement(TeamSection))
     })
 
-    const gitTab = screen.getByRole('tab', { name: /git/i })
-    fireEvent.click(gitTab)
+    const tabs = screen.getAllByRole('tab')
+    const p2pTab = tabs.find(t => t.textContent?.includes('P2P'))!
+    const ossTab = tabs.find(t => t.textContent?.includes('S3'))!
 
-    expect(gitTab.getAttribute('aria-selected')).toBe('true')
-    const p2pTab = screen.getByRole('tab', { name: /p2p/i })
-    expect(p2pTab.getAttribute('aria-selected')).toBe('false')
-  })
+    // Switch to P2P
+    fireEvent.click(p2pTab)
+    // Switch back to S3/OSS
+    fireEvent.click(ossTab)
 
-  it('preserves P2P tab content when switching back', async () => {
-    const { TeamSection } = await import('../components/settings/TeamSection')
-
-    await act(async () => {
-      render(React.createElement(TeamSection))
-    })
-
-    // Switch to Git
-    fireEvent.click(screen.getByRole('tab', { name: /git/i }))
-    // Switch back to P2P
-    fireEvent.click(screen.getByRole('tab', { name: /p2p/i }))
-
-    expect(screen.getByRole('tab', { name: /p2p/i }).getAttribute('aria-selected')).toBe('true')
+    expect(ossTab.getAttribute('aria-selected')).toBe('true')
   })
 })

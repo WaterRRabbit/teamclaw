@@ -1,6 +1,6 @@
 [package]
 name = "teamclaw"
-version = "0.1.2"
+version = "0.1.15"
 description = "TeamClaw - AI Agent Desktop Platform"
 authors = ["TeamClaw Team"]
 edition = "2021"
@@ -27,6 +27,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-aptabase = "1.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 indexmap = { version = "2", features = ["serde"] }
@@ -74,8 +75,8 @@ tree-sitter-typescript = "0.23"
 tree-sitter-python = "0.23"
 tree-sitter-go = "0.23"
 thiserror = "2"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = { version = "0.1", features = ["log"] }
+tauri-plugin-log = "2"
 
 # P2P team sync (optional; enable with p2p feature; off by default on Windows build)
 iroh = { version = "0.96", optional = true }
@@ -86,9 +87,9 @@ filetime = "0.2"
 arboard = "3"
 futures-lite = "2"
 
-# HTTP server for RAG MCP bridge
+# axum: E2E test control server (debug builds only, lib.rs)
 axum = "0.7"
-tower-http = { version = "0.5", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors"] }
 gethostname = "1.1.0"
 
 # ClawHub skill registry
@@ -128,7 +129,7 @@ wiremock = "0.5"
 
 [profile.release]
 # Use unwind so catch_unwind in email.rs and deps (e.g. html2md) work; abort would conflict.
-codegen-units = 1
+codegen-units = 16
 lto = "thin"
 opt-level = "s"
 strip = true

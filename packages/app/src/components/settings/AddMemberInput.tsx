@@ -2,22 +2,33 @@ import * as React from 'react'
 import { UserPlus, AlertCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 export function AddMemberInput({
   onAdd,
   error,
 }: {
-  onAdd: (nodeId: string, name: string) => void
+  onAdd: (nodeId: string, name: string, role: string, label: string) => void
   error?: string | null
 }) {
   const [nodeId, setNodeId] = React.useState('')
   const [name, setName] = React.useState('')
+  const [label, setLabel] = React.useState('')
+  const [role, setRole] = React.useState<'editor' | 'viewer'>('editor')
 
   const handleSubmit = () => {
     if (nodeId.trim()) {
-      onAdd(nodeId.trim(), name.trim())
+      onAdd(nodeId.trim(), name.trim(), role, label.trim())
       setNodeId('')
       setName('')
+      setLabel('')
+      setRole('editor')
     }
   }
 
@@ -40,6 +51,21 @@ export function AddMemberInput({
               if (e.key === 'Enter' && nodeId.trim()) handleSubmit()
             }}
           />
+          <Input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="Label / Remark (optional)"
+            className="h-9 text-sm"
+          />
+          <Select value={role} onValueChange={(v) => setRole(v as 'editor' | 'viewer')}>
+            <SelectTrigger className="h-9">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="editor">Editor</SelectItem>
+              <SelectItem value="viewer">Viewer</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <Button
           onClick={handleSubmit}

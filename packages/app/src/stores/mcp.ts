@@ -33,7 +33,6 @@ interface MCPState {
   serverTools: Record<string, string[]>  // serverName -> tool names
   isLoading: boolean
   error: string | null
-  hasChanges: boolean  // Track if there are unsaved changes that need OpenCode restart
   testingServers: Record<string, boolean>  // Track which servers are being tested
   testResults: Record<string, MCPTestResult>  // Store test results
 
@@ -47,8 +46,8 @@ interface MCPState {
   toggleServer: (name: string, enabled: boolean) => Promise<void>
   testServer: (name: string) => Promise<void>
   clearError: () => void
-  setHasChanges: (hasChanges: boolean) => void
   clearTestResult: (name: string) => void
+  syncFromFile: () => Promise<void>
 }
 
 export const useMCPStore = create<MCPState>((set) => ({
@@ -57,14 +56,13 @@ export const useMCPStore = create<MCPState>((set) => ({
   serverTools: {},
   isLoading: false,
   error: null,
-  hasChanges: false,
   testingServers: {},
   testResults: {},
 
   loadConfig: async () => {
     await withAsync(set, async () => {
       const config = await invoke<Record<string, MCPServerConfig>>('get_mcp_config')
-      set({ servers: config, hasChanges: false })
+      set({ servers: config })
     })
   },
 
@@ -98,7 +96,7 @@ export const useMCPStore = create<MCPState>((set) => ({
     await withAsync(set, async () => {
       await invoke('add_mcp_server', { name, serverConfig: config })
       const updatedConfig = await invoke<Record<string, MCPServerConfig>>('get_mcp_config')
-      set({ servers: updatedConfig, hasChanges: true })
+      set({ servers: updatedConfig })
     }, { rethrow: true })
   },
 
@@ -106,7 +104,7 @@ export const useMCPStore = create<MCPState>((set) => ({
     await withAsync(set, async () => {
       await invoke('update_mcp_server', { name, serverConfig: config })
       const updatedConfig = await invoke<Record<string, MCPServerConfig>>('get_mcp_config')
-      set({ servers: updatedConfig, hasChanges: true })
+      set({ servers: updatedConfig })
     }, { rethrow: true })
   },
 
@@ -114,7 +112,7 @@ export const useMCPStore = create<MCPState>((set) => ({
     await withAsync(set, async () => {
       await invoke('remove_mcp_server', { name })
       const updatedConfig = await invoke<Record<string, MCPServerConfig>>('get_mcp_config')
-      set({ servers: updatedConfig, hasChanges: true })
+      set({ servers: updatedConfig })
     }, { rethrow: true })
   },
 
@@ -122,7 +120,7 @@ export const useMCPStore = create<MCPState>((set) => ({
     await withAsync(set, async () => {
       await invoke('toggle_mcp_server', { name, enabled })
       const updatedConfig = await invoke<Record<string, MCPServerConfig>>('get_mcp_config')
-      set({ servers: updatedConfig, hasChanges: true })
+      set({ servers: updatedConfig })
     }, { rethrow: true })
   },
 
@@ -153,13 +151,61 @@ export const useMCPStore = create<MCPState>((set) => ({
 
   clearError: () => set({ error: null }),
   
-  setHasChanges: (hasChanges: boolean) => set({ hasChanges }),
-
   clearTestResult: (name: string) => {
     set((state) => {
       const newResults = { ...state.testResults }
       delete newResults[name]
       return { testResults: newResults }
     })
+  },
+
+  syncFromFile: async () => {
+    try {
+      const newConfig = await invoke<Record<string, MCPServerConfig>>('get_mcp_config')
+      const oldConfig = useMCPStore.getState().servers
+
+      let client
+      try {
+        client = getOpenCodeClient()
+      } catch {
+        // Client not initialized, just update local state
+        set({ servers: newConfig })
+        return
+      }
+
+      const oldNames = new Set(Object.keys(oldConfig))
+      const newNames = new Set(Object.keys(newConfig))
+      const ops: Promise<unknown>[] = []
+
+      // Removed servers → disconnect
+      for (const name of oldNames) {
+        if (!newNames.has(name)) {
+          ops.push(client.disconnectMCP(name).catch(() => {}))
+        }
+      }
+
+      // Added servers → add to runtime
+      for (const name of newNames) {
+        if (!oldNames.has(name) && newConfig[name].enabled !== false) {
+          ops.push(client.addMCPServer(name, newConfig[name]).catch(() => {}))
+        }
+      }
+
+      // Changed servers → disconnect + connect
+      for (const name of newNames) {
+        if (oldNames.has(name) && JSON.stringify(oldConfig[name]) !== JSON.stringify(newConfig[name])) {
+          ops.push(
+            client.disconnectMCP(name).catch(() => {})
+              .then(() => client.connectMCP(name).catch(() => {}))
+          )
+        }
+      }
+
+      await Promise.all(ops)
+      const runtimeStatus = await client.getMCPStatus().catch(() => ({} as Record<string, import('@/lib/opencode/types').MCPRuntimeStatus>))
+      set({ servers: newConfig, runtimeStatus })
+    } catch (error) {
+      console.error('[MCP] syncFromFile failed:', error)
+    }
   },
 }))

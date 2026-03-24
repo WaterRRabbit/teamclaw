@@ -1,4 +1,6 @@
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State};
 
 // --- Constants ---

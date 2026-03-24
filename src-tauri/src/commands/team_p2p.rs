@@ -1,18 +1,45 @@
 // P2P team sync via iroh-docs - bidirectional document-based file sharing
 
+use super::team_unified::{MemberRole, TeamManifest, TeamMember};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use serde::{Deserialize, Serialize};
 
-use iroh::Endpoint;
+use iroh::{Endpoint, SecretKey};
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::BlobsProtocol;
 use iroh_gossip::net::Gossip;
 
 /// Default storage path for iroh node state
 const IROH_STORAGE_DIR: &str = ".teamclaw/iroh";
+/// Filename for the persisted Ed25519 secret key
+const SECRET_KEY_FILE: &str = "secret_key";
+
+/// Load or generate a persistent Ed25519 secret key at `storage_path/secret_key`.
+fn load_or_create_secret_key(storage_path: &Path) -> Result<SecretKey, String> {
+    let key_path = storage_path.join(SECRET_KEY_FILE);
+
+    if key_path.exists() {
+        let bytes =
+            std::fs::read(&key_path).map_err(|e| format!("Failed to read secret key: {}", e))?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| "Secret key file has invalid length (expected 32 bytes)".to_string())?;
+        return Ok(SecretKey::from_bytes(&bytes));
+    }
+
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|e| format!("Failed to generate random bytes: {}", e))?;
+    let key = SecretKey::from_bytes(&bytes);
+    std::fs::create_dir_all(storage_path)
+        .map_err(|e| format!("Failed to create iroh storage dir: {}", e))?;
+    std::fs::write(&key_path, key.to_bytes())
+        .map_err(|e| format!("Failed to write secret key: {}", e))?;
+    Ok(key)
+}
 
 /// Wraps an iroh endpoint with blobs, gossip, and docs for P2P team file sync.
 pub struct IrohNode {
@@ -44,13 +71,14 @@ impl IrohNode {
             .await
             .map_err(|e| format!("Failed to create iroh blob store: {}", e))?;
 
+        let secret_key = load_or_create_secret_key(storage_path)?;
         let endpoint = Endpoint::builder()
+            .secret_key(secret_key)
             .bind()
             .await
             .map_err(|e| format!("Failed to bind iroh endpoint: {}", e))?;
 
-        let gossip = Gossip::builder()
-            .spawn(endpoint.clone());
+        let gossip = Gossip::builder().spawn(endpoint.clone());
 
         let blobs_store: iroh_blobs::api::Store = store.clone().into();
 
@@ -60,7 +88,8 @@ impl IrohNode {
             .map_err(|e| format!("Failed to start docs engine: {}", e))?;
 
         // Get or create a persistent default author
-        let author = docs.author_default()
+        let author = docs
+            .author_default()
             .await
             .map_err(|e| format!("Failed to get default author: {}", e))?;
 
@@ -130,9 +159,7 @@ pub struct DeviceInfo {
 
 /// Collect local device metadata (platform, arch, hostname).
 pub fn get_device_metadata() -> DeviceInfo {
-    let hostname = gethostname::gethostname()
-        .to_string_lossy()
-        .to_string();
+    let hostname = gethostname::gethostname().to_string_lossy().to_string();
     DeviceInfo {
         node_id: String::new(), // filled by caller with actual NodeId
         platform: std::env::consts::OS.to_string(),
@@ -153,9 +180,7 @@ pub async fn get_device_info(
 }
 
 #[tauri::command]
-pub async fn get_device_node_id(
-    iroh_state: tauri::State<'_, IrohState>,
-) -> Result<String, String> {
+pub async fn get_device_node_id(iroh_state: tauri::State<'_, IrohState>) -> Result<String, String> {
     let guard = iroh_state.lock().await;
     let node = guard.as_ref().ok_or("P2P node not running")?;
     Ok(get_node_id(node))
@@ -169,7 +194,10 @@ fn collect_files(base: &Path, dir: &Path) -> Vec<(String, Vec<u8>)> {
     if !dir.exists() {
         return files;
     }
-    for entry in walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+    for entry in walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         if entry.file_type().is_file() {
             if let Ok(content) = std::fs::read(entry.path()) {
                 if let Ok(rel) = entry.path().strip_prefix(base) {
@@ -181,31 +209,8 @@ fn collect_files(base: &Path, dir: &Path) -> Vec<(String, Vec<u8>)> {
     files
 }
 
-/// Scaffold the teamclaw-team directory with default structure if it doesn't exist or is empty.
-fn scaffold_team_dir(team_dir: &str) -> Result<(), String> {
-    let team_path = Path::new(team_dir);
-
-    let need_scaffold = !team_path.exists() || collect_files(team_path, team_path).is_empty();
-
-    if !need_scaffold {
-        return Ok(());
-    }
-
-    let dirs = ["skills", ".mcp", "knowledge", "_feedback"];
-    for d in &dirs {
-        std::fs::create_dir_all(team_path.join(d))
-            .map_err(|e| format!("Failed to create {}: {}", d, e))?;
-    }
-
-    let readme_path = team_path.join("README.md");
-    if !readme_path.exists() {
-        let readme = "# TeamClaw Team Drive\n\nShared team resources synced via P2P.\n\n## Structure\n\n- `skills/` - Shared agent skills\n- `.mcp/` - MCP server configurations\n- `knowledge/` - Shared knowledge base\n- `_feedback/` - Member feedback summaries (auto-synced)\n";
-        std::fs::write(&readme_path, readme)
-            .map_err(|e| format!("Failed to write README.md: {}", e))?;
-    }
-
-    Ok(())
-}
+// Re-use shared scaffold from team.rs
+use super::team::scaffold_team_dir;
 
 // ─── Create / Join (iroh-docs) ──────────────────────────────────────────
 
@@ -217,20 +222,42 @@ pub async fn create_team(
     llm_base_url: Option<String>,
     llm_model: Option<String>,
     llm_model_name: Option<String>,
+    team_name: Option<String>,
+    owner_name: Option<String>,
+    owner_email: Option<String>,
+    app_handle: Option<tauri::AppHandle>,
 ) -> Result<String, String> {
     scaffold_team_dir(team_dir)?;
 
     // Write LLM config to .teamclaw/teamclaw.json
-    let llm_config = crate::commands::team::build_llm_config(llm_base_url, llm_model, llm_model_name);
+    let llm_config =
+        crate::commands::team::build_llm_config(llm_base_url, llm_model, llm_model_name);
     crate::commands::team::write_llm_config(workspace_path, Some(&llm_config))?;
     println!("[Team P2P] Wrote LLM config to .teamclaw/teamclaw.json");
 
     let node_id = get_node_id(node);
     let info = get_device_metadata();
 
+    // Write _team/team.json with team metadata
+    let team_info = serde_json::json!({
+        "teamName": team_name.as_deref().unwrap_or(""),
+        "ownerName": owner_name.as_deref().unwrap_or(""),
+        "ownerEmail": owner_email.as_deref().unwrap_or(""),
+        "ownerNodeId": &node_id,
+        "createdAt": chrono::Utc::now().to_rfc3339(),
+    });
+    let team_info_dir = Path::new(team_dir).join("_team");
+    std::fs::create_dir_all(&team_info_dir).ok();
+    std::fs::write(
+        team_info_dir.join("team.json"),
+        serde_json::to_string_pretty(&team_info).unwrap_or_default(),
+    )
+    .map_err(|e| format!("Failed to write team.json: {}", e))?;
+
     let owner_member = TeamMember {
         node_id: node_id.clone(),
-        name: String::new(),
+        name: owner_name.unwrap_or_default(),
+        role: MemberRole::Owner,
         label: info.hostname.clone(),
         platform: info.platform,
         arch: info.arch,
@@ -241,7 +268,9 @@ pub async fn create_team(
     write_members_manifest(team_dir, &node_id, &[owner_member.clone()])?;
 
     // Create a new iroh-docs document
-    let doc = node.docs.create()
+    let doc = node
+        .docs
+        .create()
         .await
         .map_err(|e| format!("Failed to create doc: {}", e))?;
 
@@ -260,17 +289,31 @@ pub async fn create_team(
         .map_err(|e| format!("Failed to write author meta: {}", e))?;
 
     // Generate a stable DocTicket (Write mode so joiners can write back)
-    let ticket = doc.share(
-        iroh_docs::api::protocol::ShareMode::Write,
-        iroh_docs::api::protocol::AddrInfoOptions::RelayAndAddresses,
-    ).await.map_err(|e| format!("Failed to share doc: {}", e))?;
+    let ticket = doc
+        .share(
+            iroh_docs::api::protocol::ShareMode::Write,
+            iroh_docs::api::protocol::AddrInfoOptions::RelayAndAddresses,
+        )
+        .await
+        .map_err(|e| format!("Failed to share doc: {}", e))?;
 
     let ticket_str = ticket.to_string();
     let namespace_id = doc.id().to_string();
 
     // Start background sync
     let team_dir_owned = team_dir.to_string();
-    start_sync_tasks(&doc, node.author, &node.store, &team_dir_owned, node.suppressed_paths.clone());
+    let node_id_for_sync = node_id.clone();
+    start_sync_tasks(
+        &doc,
+        node.author,
+        &node.store,
+        &team_dir_owned,
+        node.suppressed_paths.clone(),
+        Arc::new(Mutex::new(MemberRole::Owner)),
+        node_id_for_sync,
+        Some(node_id.clone()),
+        app_handle,
+    );
 
     node.active_doc = Some(doc);
 
@@ -282,7 +325,7 @@ pub async fn create_team(
     config.allowed_members = vec![owner_member];
     config.namespace_id = Some(namespace_id);
     config.doc_ticket = Some(ticket_str.clone());
-    config.role = Some("owner".to_string());
+    config.role = Some(MemberRole::Owner);
     write_p2p_config(workspace_path, Some(&config))?;
 
     Ok(ticket_str)
@@ -297,6 +340,7 @@ pub async fn join_team_drive(
     ticket_str: &str,
     team_dir: &str,
     workspace_path: &str,
+    app_handle: Option<tauri::AppHandle>,
 ) -> Result<String, String> {
     use std::str::FromStr;
 
@@ -304,7 +348,9 @@ pub async fn join_team_drive(
         .map_err(|_| "Invalid ticket format".to_string())?;
 
     // Import the document — this joins peers and starts syncing
-    let doc = node.docs.import(ticket)
+    let doc = node
+        .docs
+        .import(ticket)
         .await
         .map_err(|e| format!("Failed to import doc: {}", e))?;
 
@@ -327,18 +373,46 @@ pub async fn join_team_drive(
 
     // Write author→node mapping so stats can resolve AuthorId back to NodeId
     let author_meta_key = format!("_meta/authors/{}", node.author);
-    doc.set_bytes(node.author, author_meta_key, joiner_node_id.as_bytes().to_vec())
-        .await
-        .map_err(|e| format!("Failed to write author meta: {}", e))?;
+    doc.set_bytes(
+        node.author,
+        author_meta_key,
+        joiner_node_id.as_bytes().to_vec(),
+    )
+    .await
+    .map_err(|e| format!("Failed to write author meta: {}", e))?;
 
     // Sync MCP configs
     let _ = crate::commands::team::sync_team_mcp_configs(workspace_path);
 
     let namespace_id = doc.id().to_string();
 
+    // Read joiner's role and owner_node_id from manifest (single read)
+    let manifest = read_members_manifest(team_dir)?;
+    let joiner_role = manifest
+        .as_ref()
+        .and_then(|m| {
+            m.members
+                .iter()
+                .find(|mem| mem.node_id == joiner_node_id)
+                .map(|mem| mem.role.clone())
+        })
+        .unwrap_or(MemberRole::Editor);
+    let manifest_owner = manifest.map(|m| m.owner_node_id);
+
     // Start background sync
     let team_dir_owned = team_dir.to_string();
-    start_sync_tasks(&doc, node.author, &node.store, &team_dir_owned, node.suppressed_paths.clone());
+    let node_id_for_sync = joiner_node_id.clone();
+    start_sync_tasks(
+        &doc,
+        node.author,
+        &node.store,
+        &team_dir_owned,
+        node.suppressed_paths.clone(),
+        Arc::new(Mutex::new(joiner_role.clone())),
+        node_id_for_sync,
+        manifest_owner.clone(),
+        app_handle,
+    );
 
     node.active_doc = Some(doc);
 
@@ -347,7 +421,9 @@ pub async fn join_team_drive(
     config.enabled = true;
     config.namespace_id = Some(namespace_id);
     config.doc_ticket = Some(ticket_str.to_string());
-    config.role = Some("member".to_string());
+
+    config.role = Some(joiner_role);
+    config.owner_node_id = manifest_owner;
     config.last_sync_at = Some(chrono::Utc::now().to_rfc3339());
     write_p2p_config(workspace_path, Some(&config))?;
 
@@ -365,14 +441,14 @@ async fn write_doc_entries_to_disk(
 
     let blobs_store: iroh_blobs::api::Store = store.clone().into();
     let query = iroh_docs::store::Query::single_latest_per_key().build();
-    let entries = doc.get_many(query)
+    let entries = doc
+        .get_many(query)
         .await
         .map_err(|e| format!("Failed to query doc entries: {}", e))?;
     let mut entries = pin!(entries);
 
     let team_path = Path::new(team_dir);
-    std::fs::create_dir_all(team_path)
-        .map_err(|e| format!("Failed to create team dir: {}", e))?;
+    std::fs::create_dir_all(team_path).map_err(|e| format!("Failed to create team dir: {}", e))?;
 
     let mut file_count = 0;
     while let Some(entry_result) = entries.next().await {
@@ -389,7 +465,9 @@ async fn write_doc_entries_to_disk(
             continue;
         }
 
-        let content = blobs_store.blobs().get_bytes(content_hash)
+        let content = blobs_store
+            .blobs()
+            .get_bytes(content_hash)
             .await
             .map_err(|e| format!("Failed to read content for '{}': {}", key, e))?;
 
@@ -407,8 +485,20 @@ async fn write_doc_entries_to_disk(
 
 /// Publish (re-sync) current files into the active doc.
 /// Used when the user manually triggers a sync or after file changes.
-pub async fn publish_team_drive(node: &IrohNode, team_dir: &str) -> Result<String, String> {
-    let doc = node.active_doc.as_ref()
+pub async fn publish_team_drive(
+    node: &IrohNode,
+    team_dir: &str,
+    workspace_path: &str,
+) -> Result<String, String> {
+    // Check caller's role
+    let config = read_p2p_config(workspace_path)?.unwrap_or_default();
+    if config.role == Some(MemberRole::Viewer) {
+        return Err("Viewers cannot publish to the team drive".to_string());
+    }
+
+    let doc = node
+        .active_doc
+        .as_ref()
         .ok_or("No active team document. Create or join a team first.")?;
 
     let team_path = Path::new(team_dir);
@@ -437,7 +527,7 @@ pub async fn rotate_namespace(
     }
 
     // Re-create as owner
-    create_team(node, team_dir, workspace_path, None, None, None).await
+    create_team(node, team_dir, workspace_path, None, None, None, None, None, None, None).await
 }
 
 // ─── Background Sync Tasks ──────────────────────────────────────────────
@@ -449,6 +539,10 @@ fn start_sync_tasks(
     store: &FsStore,
     team_dir: &str,
     suppressed_paths: Arc<Mutex<HashSet<std::path::PathBuf>>>,
+    my_role: Arc<Mutex<MemberRole>>,
+    my_node_id: String,
+    owner_node_id: Option<String>,
+    app_handle: Option<tauri::AppHandle>,
 ) {
     let blobs_store: iroh_blobs::api::Store = store.clone().into();
     let team_dir_a = team_dir.to_string();
@@ -456,8 +550,9 @@ fn start_sync_tasks(
     let suppressed_a = suppressed_paths.clone();
 
     // Task A: remote doc changes → disk
+    let my_node_id_a = my_node_id.clone();
     tokio::spawn(async move {
-        doc_to_disk_watcher(doc_a, blobs_store, team_dir_a, suppressed_a).await;
+        doc_to_disk_watcher(doc_a, blobs_store, team_dir_a, suppressed_a, my_node_id_a, owner_node_id, app_handle).await;
     });
 
     // Task B: local disk changes → doc (with blob store for skills counting)
@@ -466,7 +561,16 @@ fn start_sync_tasks(
     let team_dir_b = team_dir.to_string();
     let suppressed_b = suppressed_paths;
     tokio::spawn(async move {
-        disk_to_doc_watcher(doc_b, blobs_store_b, author, team_dir_b, suppressed_b).await;
+        disk_to_doc_watcher(
+            doc_b,
+            blobs_store_b,
+            author,
+            team_dir_b,
+            suppressed_b,
+            my_role,
+            my_node_id,
+        )
+        .await;
     });
 }
 
@@ -504,9 +608,13 @@ async fn doc_to_disk_watcher(
     blobs_store: iroh_blobs::api::Store,
     team_dir: String,
     suppressed_paths: Arc<Mutex<HashSet<std::path::PathBuf>>>,
+    my_node_id: String,
+    owner_node_id: Option<String>,
+    app_handle: Option<tauri::AppHandle>,
 ) {
     use futures_lite::StreamExt;
     use iroh_docs::engine::LiveEvent;
+    use std::collections::HashMap;
 
     let mut events = match doc.subscribe().await {
         Ok(s) => s,
@@ -516,6 +624,34 @@ async fn doc_to_disk_watcher(
         }
     };
 
+    // Build AuthorId → NodeId map from _meta/authors/* entries
+    let mut author_to_node: HashMap<String, String> = HashMap::new();
+    let mut node_to_role: HashMap<String, MemberRole> = HashMap::new();
+
+    // Pre-load author map from doc
+    let query = iroh_docs::store::Query::single_latest_per_key()
+        .key_prefix("_meta/authors/")
+        .build();
+    if let Ok(entries) = doc.get_many(query).await {
+        let mut entries = std::pin::pin!(entries);
+        while let Some(Ok(entry)) = entries.next().await {
+            let author_id = String::from_utf8_lossy(entry.key())
+                .trim_start_matches("_meta/authors/")
+                .to_string();
+            if let Ok(content) = blobs_store.blobs().get_bytes(entry.content_hash()).await {
+                let node_id = String::from_utf8_lossy(&content).to_string();
+                author_to_node.insert(author_id, node_id);
+            }
+        }
+    }
+
+    // Pre-load role map from _team/members.json
+    if let Ok(Some(manifest)) = read_members_manifest(&team_dir) {
+        for member in &manifest.members {
+            node_to_role.insert(member.node_id.clone(), member.role.clone());
+        }
+    }
+
     while let Some(event_result) = events.next().await {
         let event = match event_result {
             Ok(e) => e,
@@ -523,37 +659,204 @@ async fn doc_to_disk_watcher(
         };
 
         match event {
-            LiveEvent::InsertRemote { entry, content_status, .. } => {
-                // Only process if content is already available locally
+            LiveEvent::InsertRemote {
+                entry,
+                content_status,
+                ..
+            } => {
                 if content_status != iroh_docs::ContentStatus::Complete {
                     continue;
                 }
 
                 let key = String::from_utf8_lossy(entry.key()).to_string();
-                let file_path = Path::new(&team_dir).join(&key);
+                let author_id_str = entry.author().to_string();
 
-                if entry.content_len() == 0 {
-                    let _ = std::fs::remove_file(&file_path);
+                // Update author map if this is an _meta/authors/ entry
+                if key.starts_with("_meta/authors/") {
+                    if let Ok(content) = blobs_store.blobs().get_bytes(entry.content_hash()).await {
+                        let node_id = String::from_utf8_lossy(&content).to_string();
+                        let aid = key.trim_start_matches("_meta/authors/").to_string();
+                        author_to_node.insert(aid, node_id);
+                    }
+                    // Still write to disk
+                    let file_path = Path::new(&team_dir).join(&key);
+                    if entry.content_len() == 0 {
+                        let _ = std::fs::remove_file(&file_path);
+                    } else if let Ok(content) =
+                        blobs_store.blobs().get_bytes(entry.content_hash()).await
+                    {
+                        write_and_suppress(&file_path, &content, &suppressed_paths).await;
+                    }
                     continue;
                 }
 
-                let content = match blobs_store.blobs().get_bytes(entry.content_hash()).await {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
+                // Resolve author → node_id
+                let writer_node_id = author_to_node.get(&author_id_str).cloned();
 
-                write_and_suppress(&file_path, &content, &suppressed_paths).await;
+                // Handle _team/left/<node_id>: member voluntarily left the team
+                if key.starts_with("_team/left/") {
+                    let leaving_node_id = key.trim_start_matches("_team/left/").to_string();
+                    // Verify the writer IS the departing member (not someone forging a leave)
+                    let writer_is_member = writer_node_id.as_deref() == Some(leaving_node_id.as_str());
+                    // Only auto-remove if WE are the owner
+                    let we_are_owner = owner_node_id.as_deref() == Some(my_node_id.as_str());
+
+                    if writer_is_member && we_are_owner {
+                        // workspace_path = team_dir without trailing /teamclaw-team
+                        let workspace_path = team_dir
+                            .strip_suffix("/teamclaw-team")
+                            .unwrap_or(&team_dir)
+                            .to_string();
+                        // Look up member name before removing (for notification)
+                        let leaving_name = node_to_role
+                            .keys()
+                            .find(|k| *k == &leaving_node_id)
+                            .and_then(|_| read_members_manifest(&team_dir).ok().flatten())
+                            .and_then(|m| {
+                                m.members
+                                    .into_iter()
+                                    .find(|mem| mem.node_id == leaving_node_id)
+                                    .map(|mem| mem.name)
+                            })
+                            .unwrap_or_else(|| leaving_node_id[..8.min(leaving_node_id.len())].to_string());
+
+                        match remove_member_from_team(
+                            &workspace_path,
+                            &team_dir,
+                            &my_node_id,
+                            &leaving_node_id,
+                        ) {
+                            Ok(()) => {
+                                eprintln!("[P2P] Auto-removed departed member: {}", leaving_node_id);
+                                // Refresh role cache
+                                if let Ok(Some(manifest)) = read_members_manifest(&team_dir) {
+                                    node_to_role.clear();
+                                    for member in &manifest.members {
+                                        node_to_role.insert(
+                                            member.node_id.clone(),
+                                            member.role.clone(),
+                                        );
+                                    }
+                                }
+                                // Emit Tauri event so the owner's UI can show a notification
+                                if let Some(ref app) = app_handle {
+                                    use tauri::Emitter;
+                                    let _ = app.emit(
+                                        "team:member-left",
+                                        serde_json::json!({
+                                            "nodeId": leaving_node_id,
+                                            "name": leaving_name,
+                                        }),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[P2P] Failed to auto-remove departed member {}: {}",
+                                    leaving_node_id, e
+                                );
+                            }
+                        }
+                    }
+
+                    // Write tombstone file to disk regardless
+                    if let Ok(content) = blobs_store.blobs().get_bytes(entry.content_hash()).await {
+                        let file_path = Path::new(&team_dir).join(&key);
+                        write_and_suppress(&file_path, &content, &suppressed_paths).await;
+                    }
+                    continue;
+                }
+
+                // Validate _team/members.json writes: only accept from owner
+                if key == "_team/members.json" {
+                    let is_owner_write = match (&writer_node_id, &owner_node_id) {
+                        (Some(writer), Some(owner)) => writer == owner,
+                        (None, _) => author_to_node.is_empty(), // bootstrap: no authors known yet
+                        _ => false,
+                    };
+                    if !is_owner_write {
+                        eprintln!(
+                            "[P2P] Rejected members.json write from non-owner: {:?}",
+                            writer_node_id
+                        );
+                        continue;
+                    }
+                    // Write to disk and update role cache
+                    if let Ok(content) = blobs_store.blobs().get_bytes(entry.content_hash()).await {
+                        let file_path = Path::new(&team_dir).join(&key);
+                        write_and_suppress(&file_path, &content, &suppressed_paths).await;
+                        // Refresh role cache
+                        if let Ok(Some(manifest)) = read_members_manifest(&team_dir) {
+                            node_to_role.clear();
+                            for member in &manifest.members {
+                                node_to_role.insert(member.node_id.clone(), member.role.clone());
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // For all other keys: check writer's role
+                if let Some(writer) = &writer_node_id {
+                    let writer_role = node_to_role
+                        .get(writer)
+                        .cloned()
+                        .unwrap_or(MemberRole::Editor);
+                    if writer_role == MemberRole::Viewer {
+                        eprintln!("[P2P] Rejected write from viewer {}: {}", writer, key);
+                        continue;
+                    }
+                } else if !author_to_node.is_empty() {
+                    // Unknown author and we already have author mappings — reject
+                    eprintln!(
+                        "[P2P] Rejected write from unknown author {}: {}",
+                        author_id_str, key
+                    );
+                    continue;
+                }
+                // If author_to_node is empty, this is bootstrap — allow
+
+                // Normal write
+                let file_path = Path::new(&team_dir).join(&key);
+                if entry.content_len() == 0 {
+                    let _ = std::fs::remove_file(&file_path);
+                } else if let Ok(content) =
+                    blobs_store.blobs().get_bytes(entry.content_hash()).await
+                {
+                    write_and_suppress(&file_path, &content, &suppressed_paths).await;
+                }
             }
             LiveEvent::ContentReady { hash } => {
-                // Content just became available — find matching entries and write to disk
                 let query = iroh_docs::store::Query::single_latest_per_key().build();
                 if let Ok(entries) = doc.get_many(query).await {
                     let mut entries = std::pin::pin!(entries);
                     while let Some(Ok(entry)) = entries.next().await {
                         if entry.content_hash() == hash {
                             let key = String::from_utf8_lossy(entry.key()).to_string();
-                            let file_path = Path::new(&team_dir).join(&key);
+                            let author_id_str = entry.author().to_string();
 
+                            // Apply same role checks as InsertRemote
+                            if let Some(writer) = author_to_node.get(&author_id_str) {
+                                let writer_role = node_to_role
+                                    .get(writer)
+                                    .cloned()
+                                    .unwrap_or(MemberRole::Editor);
+                                if writer_role == MemberRole::Viewer {
+                                    eprintln!(
+                                        "[P2P] Rejected ContentReady from viewer {}: {}",
+                                        writer, key
+                                    );
+                                    break;
+                                }
+                            } else if !author_to_node.is_empty() {
+                                eprintln!(
+                                    "[P2P] Rejected ContentReady from unknown author: {}",
+                                    key
+                                );
+                                break;
+                            }
+
+                            let file_path = Path::new(&team_dir).join(&key);
                             if let Ok(content) = blobs_store.blobs().get_bytes(hash).await {
                                 write_and_suppress(&file_path, &content, &suppressed_paths).await;
                             }
@@ -574,8 +877,10 @@ async fn disk_to_doc_watcher(
     author: iroh_docs::AuthorId,
     team_dir: String,
     suppressed_paths: Arc<Mutex<HashSet<std::path::PathBuf>>>,
+    my_role: Arc<Mutex<MemberRole>>, // NEW
+    my_node_id: String,              // NEW
 ) {
-    use notify::{Watcher, RecursiveMode};
+    use notify::{RecursiveMode, Watcher};
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Event>(256);
 
@@ -630,15 +935,40 @@ async fn disk_to_doc_watcher(
                         }
 
                         if let Ok(rel) = path.strip_prefix(&team_dir) {
-                            let key = rel.to_string_lossy().to_string();
+                            let rel_path = rel.to_string_lossy().to_string();
+
+                            // Refresh my_role if the members manifest changed
+                            if rel_path == "_team/members.json" {
+                                if let Ok(Some(manifest)) = read_members_manifest(&team_dir) {
+                                    if let Some(me) =
+                                        manifest.members.iter().find(|m| m.node_id == my_node_id)
+                                    {
+                                        let mut role = my_role.lock().await;
+                                        *role = me.role.clone();
+                                        eprintln!("[P2P] My role updated to: {:?}", *role);
+                                    }
+                                }
+                            }
+
+                            // Check if we have write permission
+                            {
+                                let role = my_role.lock().await;
+                                if *role == MemberRole::Viewer {
+                                    eprintln!("[P2P] Skipping upload (viewer mode): {}", rel_path);
+                                    continue;
+                                }
+                            }
+
+                            let key = rel_path;
                             if let Ok(content) = std::fs::read(path) {
                                 if let Err(e) = doc.set_bytes(author, key.clone(), content).await {
                                     eprintln!("[P2P] Failed to sync local change '{}': {}", key, e);
                                 }
                                 // Track skill file contributions for leaderboard
-                                if path.file_name().map_or(false, |n| {
-                                    n.eq_ignore_ascii_case("SKILL.md")
-                                }) {
+                                if path
+                                    .file_name()
+                                    .map_or(false, |n| n.eq_ignore_ascii_case("SKILL.md"))
+                                {
                                     increment_skills_count(&doc, &blobs_store, author).await;
                                 }
                             }
@@ -648,7 +978,18 @@ async fn disk_to_doc_watcher(
                 notify::EventKind::Remove(_) => {
                     for path in &event.paths {
                         if let Ok(rel) = path.strip_prefix(&team_dir) {
-                            let key = rel.to_string_lossy().to_string();
+                            let rel_path = rel.to_string_lossy().to_string();
+
+                            // Check if we have write permission
+                            {
+                                let role = my_role.lock().await;
+                                if *role == MemberRole::Viewer {
+                                    eprintln!("[P2P] Skipping upload (viewer mode): {}", rel_path);
+                                    continue;
+                                }
+                            }
+
+                            let key = rel_path;
                             // Write empty content as tombstone
                             let _ = doc.set_bytes(author, key, Vec::<u8>::new()).await;
                         }
@@ -682,21 +1023,6 @@ pub fn check_join_authorization(team_dir: &str, joiner_node_id: &str) -> Result<
 
 // ─── P2P Configuration ────────────────────────────────────────────────────
 
-/// A team member entry in the allowlist.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TeamMember {
-    pub node_id: String,
-    /// Human-readable display name for this member (e.g. "Alice", "Bob")
-    #[serde(default)]
-    pub name: String,
-    pub label: String,
-    pub platform: String,
-    pub arch: String,
-    pub hostname: String,
-    pub added_at: String,
-}
-
 /// A subscribed P2P ticket entry (kept for backward compat).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -726,14 +1052,23 @@ pub struct P2pConfig {
     /// Stable DocTicket for sharing (only set by owner)
     #[serde(default)]
     pub doc_ticket: Option<String>,
-    /// Role in the team: "owner" or "member"
+    /// Role in the team: owner, editor, or viewer
     #[serde(default)]
-    pub role: Option<String>,
+    pub role: Option<MemberRole>,
+    /// Seed node URL for team discovery and applications
+    #[serde(default)]
+    pub seed_url: Option<String>,
+    #[serde(default)]
+    pub team_secret: Option<String>,
 }
 
 /// Read P2P config from teamclaw.json in the workspace.
 pub fn read_p2p_config(workspace_path: &str) -> Result<Option<P2pConfig>, String> {
-    let config_path = format!("{}/{}/teamclaw.json", workspace_path, crate::commands::TEAMCLAW_DIR);
+    let config_path = format!(
+        "{}/{}/teamclaw.json",
+        workspace_path,
+        crate::commands::TEAMCLAW_DIR
+    );
 
     if !Path::new(&config_path).exists() {
         return Ok(None);
@@ -756,10 +1091,7 @@ pub fn read_p2p_config(workspace_path: &str) -> Result<Option<P2pConfig>, String
 }
 
 /// Write P2P config to teamclaw.json, preserving other fields.
-pub fn write_p2p_config(
-    workspace_path: &str,
-    config: Option<&P2pConfig>,
-) -> Result<(), String> {
+pub fn write_p2p_config(workspace_path: &str, config: Option<&P2pConfig>) -> Result<(), String> {
     let teamclaw_dir = format!("{}/{}", workspace_path, crate::commands::TEAMCLAW_DIR);
     let _ = std::fs::create_dir_all(&teamclaw_dir);
     let config_path = format!("{}/teamclaw.json", teamclaw_dir);
@@ -795,14 +1127,6 @@ pub fn write_p2p_config(
 }
 
 // ─── Team Members Manifest ───────────────────────────────────────────────
-
-/// The `_team/members.json` manifest stored in the team drive.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TeamManifest {
-    pub owner_node_id: String,
-    pub members: Vec<TeamMember>,
-}
 
 /// Write the team members manifest to `<team_dir>/_team/members.json`.
 pub fn write_members_manifest(
@@ -842,6 +1166,66 @@ pub fn read_members_manifest(team_dir: &str) -> Result<Option<TeamManifest>, Str
     Ok(Some(manifest))
 }
 
+// ─── Leave Team (member) ─────────────────────────────────────────────────
+
+/// Leave the team as a non-owner member.
+/// Writes a leave tombstone to the P2P doc so the owner is notified,
+/// then disconnects and removes all local team data.
+#[tauri::command]
+pub async fn p2p_leave_team(
+    iroh_state: tauri::State<'_, IrohState>,
+    opencode_state: tauri::State<'_, crate::commands::opencode::OpenCodeState>,
+) -> Result<(), String> {
+    let workspace_path = opencode_state
+        .workspace_path
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .ok_or("No workspace path set")?;
+
+    // Owner must use p2p_dissolve_team instead
+    let config = read_p2p_config(&workspace_path)?.unwrap_or_default();
+    if config.role == Some(MemberRole::Owner) {
+        return Err("Team owners cannot leave — use Dissolve Team to end the team".to_string());
+    }
+
+    // Write leave tombstone so the owner's sync detects the departure
+    let mut guard = iroh_state.lock().await;
+    if let Some(node) = guard.as_mut() {
+        let my_node_id = get_node_id(node);
+        if let Some(doc) = &node.active_doc {
+            let leave_key = format!("_team/left/{}", my_node_id);
+            let _ = doc
+                .set_bytes(
+                    node.author,
+                    leave_key,
+                    chrono::Utc::now().to_rfc3339().into_bytes(),
+                )
+                .await;
+            // Brief pause to let tombstone propagate
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        }
+        if let Some(doc) = node.active_doc.take() {
+            let _ = doc.leave().await;
+        }
+    }
+    drop(guard);
+
+    // Remove local team data
+    let teamclaw_dir = format!("{}/{}", workspace_path, crate::commands::TEAMCLAW_DIR);
+    if Path::new(&teamclaw_dir).exists() {
+        std::fs::remove_dir_all(&teamclaw_dir)
+            .map_err(|e| format!("Failed to remove .teamclaw directory: {}", e))?;
+    }
+    let team_dir = format!("{}/teamclaw-team", workspace_path);
+    if Path::new(&team_dir).exists() {
+        std::fs::remove_dir_all(&team_dir)
+            .map_err(|e| format!("Failed to remove team directory: {}", e))?;
+    }
+
+    Ok(())
+}
+
 // ─── Disconnect ─────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -855,6 +1239,22 @@ pub async fn p2p_disconnect_source(
         .map_err(|e| e.to_string())?
         .clone()
         .ok_or("No workspace path set")?;
+
+    // Prevent owner from disconnecting if there are other members
+    if let Ok(Some(config)) = read_p2p_config(&workspace_path) {
+        let guard = iroh_state.lock().await;
+        if let Some(node) = guard.as_ref() {
+            let my_node_id = get_node_id(node);
+            if config.owner_node_id.as_deref() == Some(&my_node_id)
+                && config.allowed_members.len() > 1
+            {
+                return Err(
+                    "团队还有其他成员，请先移除所有成员或转让管理员角色后再断开".to_string()
+                );
+            }
+        }
+        drop(guard);
+    }
 
     // Close active doc
     let mut guard = iroh_state.lock().await;
@@ -882,6 +1282,61 @@ pub async fn p2p_disconnect_source(
     Ok(())
 }
 
+/// Dissolve the team. Only the owner can call this.
+/// Writes a tombstone to notify other members, then cleans up local data.
+#[tauri::command]
+pub async fn p2p_dissolve_team(
+    iroh_state: tauri::State<'_, IrohState>,
+    opencode_state: tauri::State<'_, crate::commands::opencode::OpenCodeState>,
+) -> Result<(), String> {
+    let workspace_path = opencode_state
+        .workspace_path
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .ok_or("No workspace path set")?;
+
+    // Only owner can dissolve
+    let config = read_p2p_config(&workspace_path)?.unwrap_or_default();
+    if config.role != Some(MemberRole::Owner) {
+        return Err("Only the team owner can dissolve the team".to_string());
+    }
+
+    // Write tombstone to doc so other members know team is dissolved
+    let mut guard = iroh_state.lock().await;
+    if let Some(node) = guard.as_mut() {
+        if let Some(doc) = &node.active_doc {
+            let _ = doc
+                .set_bytes(
+                    node.author,
+                    "_team/dissolved",
+                    chrono::Utc::now().to_rfc3339().into_bytes(),
+                )
+                .await;
+            // Brief pause to let tombstone propagate
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        if let Some(doc) = node.active_doc.take() {
+            let _ = doc.leave().await;
+        }
+    }
+    drop(guard);
+
+    // Clean up local data
+    let teamclaw_dir = format!("{}/{}", workspace_path, crate::commands::TEAMCLAW_DIR);
+    if Path::new(&teamclaw_dir).exists() {
+        std::fs::remove_dir_all(&teamclaw_dir)
+            .map_err(|e| format!("Failed to remove .teamclaw directory: {}", e))?;
+    }
+    let team_dir = format!("{}/teamclaw-team", workspace_path);
+    if Path::new(&team_dir).exists() {
+        std::fs::remove_dir_all(&team_dir)
+            .map_err(|e| format!("Failed to remove team directory: {}", e))?;
+    }
+
+    Ok(())
+}
+
 // ─── Team Member Management ─────────────────────────────────────────────
 
 /// Add a member to the team allowlist. Only the owner can call this.
@@ -893,24 +1348,26 @@ pub fn add_member_to_team(
 ) -> Result<(), String> {
     let mut config = read_p2p_config(workspace_path)?.unwrap_or_default();
 
-    let owner_id = config.owner_node_id.as_deref()
+    let owner_id = config
+        .owner_node_id
+        .as_deref()
         .ok_or("No team owner configured")?;
     if owner_id != caller_node_id {
         return Err("Only the team owner can manage members".to_string());
     }
 
-    if config.allowed_members.iter().any(|m| m.node_id == member.node_id) {
+    if config
+        .allowed_members
+        .iter()
+        .any(|m| m.node_id == member.node_id)
+    {
         return Err("Member already exists".to_string());
     }
 
     config.allowed_members.push(member);
     write_p2p_config(workspace_path, Some(&config))?;
 
-    write_members_manifest(
-        team_dir,
-        caller_node_id,
-        &config.allowed_members,
-    )?;
+    write_members_manifest(team_dir, caller_node_id, &config.allowed_members)?;
 
     Ok(())
 }
@@ -924,7 +1381,9 @@ pub fn remove_member_from_team(
 ) -> Result<(), String> {
     let mut config = read_p2p_config(workspace_path)?.unwrap_or_default();
 
-    let owner_id = config.owner_node_id.as_deref()
+    let owner_id = config
+        .owner_node_id
+        .as_deref()
         .ok_or("No team owner configured")?;
     if owner_id != caller_node_id {
         return Err("Only the team owner can manage members".to_string());
@@ -935,10 +1394,47 @@ pub fn remove_member_from_team(
     }
 
     let before_len = config.allowed_members.len();
-    config.allowed_members.retain(|m| m.node_id != target_node_id);
+    config
+        .allowed_members
+        .retain(|m| m.node_id != target_node_id);
     if config.allowed_members.len() == before_len {
         return Err("Member not found".to_string());
     }
+
+    write_p2p_config(workspace_path, Some(&config))?;
+    write_members_manifest(team_dir, caller_node_id, &config.allowed_members)?;
+
+    Ok(())
+}
+
+/// Update a member's role. Only the owner can call this.
+pub fn update_member_role(
+    workspace_path: &str,
+    team_dir: &str,
+    caller_node_id: &str,
+    target_node_id: &str,
+    new_role: MemberRole,
+) -> Result<(), String> {
+    let mut config = read_p2p_config(workspace_path)?.unwrap_or_default();
+
+    let owner_id = config
+        .owner_node_id
+        .as_deref()
+        .ok_or("No team owner configured")?;
+    if owner_id != caller_node_id {
+        return Err("Only the team owner can manage members".to_string());
+    }
+
+    if target_node_id == caller_node_id {
+        return Err("Cannot change the owner's role".to_string());
+    }
+
+    let member = config
+        .allowed_members
+        .iter_mut()
+        .find(|m| m.node_id == target_node_id)
+        .ok_or("Member not found")?;
+    member.role = new_role;
 
     write_p2p_config(workspace_path, Some(&config))?;
     write_members_manifest(team_dir, caller_node_id, &config.allowed_members)?;
@@ -950,6 +1446,7 @@ pub fn remove_member_from_team(
 pub async fn team_add_member(
     node_id: String,
     name: String,
+    role: Option<String>,
     iroh_state: tauri::State<'_, IrohState>,
     opencode_state: tauri::State<'_, crate::commands::opencode::OpenCodeState>,
 ) -> Result<(), String> {
@@ -965,9 +1462,15 @@ pub async fn team_add_member(
     let caller_id = get_node_id(node);
     drop(guard);
 
+    let member_role = match role.as_deref() {
+        Some("viewer") => MemberRole::Viewer,
+        _ => MemberRole::Editor,
+    };
+
     let member = TeamMember {
         node_id,
         name,
+        role: member_role,
         label: String::new(),
         platform: String::new(),
         arch: String::new(),
@@ -984,7 +1487,9 @@ pub async fn team_add_member(
         if let Some(doc) = &node.active_doc {
             let manifest_path = format!("{}/teamclaw-team/_team/members.json", workspace_path);
             if let Ok(content) = std::fs::read(&manifest_path) {
-                let _ = doc.set_bytes(node.author, "_team/members.json", content).await;
+                let _ = doc
+                    .set_bytes(node.author, "_team/members.json", content)
+                    .await;
             }
         }
     }
@@ -1019,7 +1524,60 @@ pub async fn team_remove_member(
         if let Some(doc) = &node.active_doc {
             let manifest_path = format!("{}/teamclaw-team/_team/members.json", workspace_path);
             if let Ok(content) = std::fs::read(&manifest_path) {
-                let _ = doc.set_bytes(node.author, "_team/members.json", content).await;
+                let _ = doc
+                    .set_bytes(node.author, "_team/members.json", content)
+                    .await;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn team_update_member_role(
+    node_id: String,
+    role: String,
+    iroh_state: tauri::State<'_, IrohState>,
+    opencode_state: tauri::State<'_, crate::commands::opencode::OpenCodeState>,
+) -> Result<(), String> {
+    let workspace_path = opencode_state
+        .workspace_path
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .ok_or("No workspace path set")?;
+
+    let new_role = match role.as_str() {
+        "viewer" => MemberRole::Viewer,
+        "editor" => MemberRole::Editor,
+        _ => return Err(format!("Invalid role: {}", role)),
+    };
+
+    // Get caller node_id, then drop guard (same pattern as team_add_member)
+    let guard = iroh_state.lock().await;
+    let node = guard.as_ref().ok_or("P2P node not running")?;
+    let caller_node_id = get_node_id(node);
+    drop(guard);
+
+    let team_dir = format!("{}/teamclaw-team", workspace_path);
+    update_member_role(
+        &workspace_path,
+        &team_dir,
+        &caller_node_id,
+        &node_id,
+        new_role,
+    )?;
+
+    // Re-acquire guard to sync updated manifest to iroh-docs
+    let guard = iroh_state.lock().await;
+    if let Some(node) = guard.as_ref() {
+        if let Some(doc) = &node.active_doc {
+            let manifest_path = format!("{}/teamclaw-team/_team/members.json", workspace_path);
+            if let Ok(content) = std::fs::read(&manifest_path) {
+                let _ = doc
+                    .set_bytes(node.author, "_team/members.json", content)
+                    .await;
             }
         }
     }
@@ -1044,7 +1602,10 @@ pub async fn p2p_check_team_dir(
 
     let team_dir = format!("{}/teamclaw-team", workspace_path);
     let exists = Path::new(&team_dir).exists();
-    let has_members = Path::new(&team_dir).join("_team").join("members.json").exists();
+    let has_members = Path::new(&team_dir)
+        .join("_team")
+        .join("members.json")
+        .exists();
 
     Ok(serde_json::json!({
         "exists": exists,
@@ -1054,9 +1615,13 @@ pub async fn p2p_check_team_dir(
 
 #[tauri::command]
 pub async fn p2p_create_team(
+    app: tauri::AppHandle,
     llm_base_url: Option<String>,
     llm_model: Option<String>,
     llm_model_name: Option<String>,
+    team_name: Option<String>,
+    owner_name: Option<String>,
+    owner_email: Option<String>,
     iroh_state: tauri::State<'_, IrohState>,
     opencode_state: tauri::State<'_, crate::commands::opencode::OpenCodeState>,
 ) -> Result<String, String> {
@@ -1071,7 +1636,19 @@ pub async fn p2p_create_team(
     let node = guard.as_mut().ok_or("P2P node not running")?;
 
     let team_dir = format!("{}/teamclaw-team", workspace_path);
-    create_team(node, &team_dir, &workspace_path, llm_base_url, llm_model, llm_model_name).await
+    create_team(
+        node,
+        &team_dir,
+        &workspace_path,
+        llm_base_url,
+        llm_model,
+        llm_model_name,
+        team_name,
+        owner_name,
+        owner_email,
+        Some(app),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1093,11 +1670,11 @@ pub async fn p2p_publish_drive(
 
     // If no active doc, create a team (first-time publish)
     if node.active_doc.is_none() {
-        return create_team(node, &team_dir, &workspace_path, None, None, None).await;
+        return create_team(node, &team_dir, &workspace_path, None, None, None, None, None, None, None).await;
     }
 
     // Otherwise, sync current files into existing doc and return saved ticket
-    publish_team_drive(node, &team_dir).await?;
+    publish_team_drive(node, &team_dir, &workspace_path).await?;
 
     let config = read_p2p_config(&workspace_path)?;
     config
@@ -1107,9 +1684,9 @@ pub async fn p2p_publish_drive(
 
 #[tauri::command]
 pub async fn p2p_join_drive(
+    app: tauri::AppHandle,
     ticket: String,
-    #[allow(unused_variables)]
-    label: String,
+    #[allow(unused_variables)] label: String,
     iroh_state: tauri::State<'_, IrohState>,
     opencode_state: tauri::State<'_, crate::commands::opencode::OpenCodeState>,
 ) -> Result<String, String> {
@@ -1124,12 +1701,13 @@ pub async fn p2p_join_drive(
     let node = guard.as_mut().ok_or("P2P node not running")?;
 
     let team_dir = format!("{}/teamclaw-team", workspace_path);
-    join_team_drive(node, &ticket, &team_dir, &workspace_path).await
+    join_team_drive(node, &ticket, &team_dir, &workspace_path, Some(app)).await
 }
 
 /// Reconnect to an existing team document on app restart.
 #[tauri::command]
 pub async fn p2p_reconnect(
+    app: tauri::AppHandle,
     iroh_state: tauri::State<'_, IrohState>,
     opencode_state: tauri::State<'_, crate::commands::opencode::OpenCodeState>,
 ) -> Result<(), String> {
@@ -1157,17 +1735,32 @@ pub async fn p2p_reconnect(
     }
 
     // Try to open the existing document from local storage
-    let namespace_id = namespace_id_str.parse::<iroh_docs::NamespaceId>()
+    let namespace_id = namespace_id_str
+        .parse::<iroh_docs::NamespaceId>()
         .map_err(|e| format!("Invalid namespace ID: {}", e))?;
 
-    let doc = node.docs.open(namespace_id)
+    let doc = node
+        .docs
+        .open(namespace_id)
         .await
         .map_err(|e| format!("Failed to open doc: {}", e))?
         .ok_or("Team document not found in local storage")?;
 
     // Start background sync
     let team_dir = format!("{}/teamclaw-team", workspace_path);
-    start_sync_tasks(&doc, node.author, &node.store, &team_dir, node.suppressed_paths.clone());
+    let my_role = config.role.clone().unwrap_or(MemberRole::Editor);
+    let my_node_id = get_node_id(node);
+    start_sync_tasks(
+        &doc,
+        node.author,
+        &node.store,
+        &team_dir,
+        node.suppressed_paths.clone(),
+        Arc::new(Mutex::new(my_role)),
+        my_node_id,
+        config.owner_node_id.clone(),
+        Some(app),
+    );
 
     node.active_doc = Some(doc);
 
@@ -1245,6 +1838,9 @@ pub async fn p2p_sync_status(
         namespace_id: config.namespace_id,
         last_sync_at: config.last_sync_at,
         members: config.allowed_members,
+        owner_node_id: config.owner_node_id,
+        seed_url: config.seed_url,
+        team_secret: config.team_secret,
     })
 }
 
@@ -1252,11 +1848,38 @@ pub async fn p2p_sync_status(
 #[serde(rename_all = "camelCase")]
 pub struct P2pSyncStatus {
     pub connected: bool,
-    pub role: Option<String>,
+    pub role: Option<MemberRole>,
     pub doc_ticket: Option<String>,
     pub namespace_id: Option<String>,
     pub last_sync_at: Option<String>,
     pub members: Vec<TeamMember>,
+    pub owner_node_id: Option<String>,
+    pub seed_url: Option<String>,
+    pub team_secret: Option<String>,
+}
+
+#[tauri::command]
+pub async fn p2p_save_seed_config(
+    seed_url: Option<String>,
+    team_secret: Option<String>,
+    opencode_state: tauri::State<'_, crate::commands::opencode::OpenCodeState>,
+) -> Result<(), String> {
+    let workspace_path = opencode_state
+        .workspace_path
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .ok_or("No workspace path set")?;
+
+    let mut config = read_p2p_config(&workspace_path)?.unwrap_or_default();
+    if let Some(url) = seed_url {
+        config.seed_url = if url.is_empty() { None } else { Some(url) };
+    }
+    if let Some(secret) = team_secret {
+        config.team_secret = if secret.is_empty() { None } else { Some(secret) };
+    }
+    write_p2p_config(&workspace_path, Some(&config))?;
+    Ok(())
 }
 
 // ─── Skills Contribution Tracking ────────────────────────────────────────
@@ -1275,10 +1898,7 @@ async fn increment_skills_count(
     let current: u64 = match doc.get_exact(author, count_key.as_bytes(), false).await {
         Ok(Some(entry)) if entry.content_len() > 0 => {
             match blobs_store.blobs().get_bytes(entry.content_hash()).await {
-                Ok(bytes) => String::from_utf8_lossy(&bytes)
-                    .trim()
-                    .parse()
-                    .unwrap_or(0),
+                Ok(bytes) => String::from_utf8_lossy(&bytes).trim().parse().unwrap_or(0),
                 Err(_) => 0,
             }
         }
@@ -1305,17 +1925,12 @@ pub struct SkillsContribution {
 
 /// Query all `_meta/skills_count/*` entries and `_meta/authors/*` entries
 /// from the active iroh-docs document to build a skills leaderboard.
-async fn query_skills_leaderboard(
-    node: &IrohNode,
-) -> Result<Vec<SkillsContribution>, String> {
+async fn query_skills_leaderboard(node: &IrohNode) -> Result<Vec<SkillsContribution>, String> {
     use futures_lite::StreamExt;
     use std::collections::HashMap;
     use std::pin::pin;
 
-    let doc = node
-        .active_doc
-        .as_ref()
-        .ok_or("No active team document")?;
+    let doc = node.active_doc.as_ref().ok_or("No active team document")?;
     let blobs_store: iroh_blobs::api::Store = node.store.clone().into();
 
     // 1. Build author_id → node_id mapping from _meta/authors/* entries
@@ -1353,10 +1968,7 @@ async fn query_skills_leaderboard(
         if let Some(author_id) = key.strip_prefix("_meta/skills_count/") {
             let count: u64 = if entry.content_len() > 0 {
                 match blobs_store.blobs().get_bytes(entry.content_hash()).await {
-                    Ok(bytes) => String::from_utf8_lossy(&bytes)
-                        .trim()
-                        .parse()
-                        .unwrap_or(0),
+                    Ok(bytes) => String::from_utf8_lossy(&bytes).trim().parse().unwrap_or(0),
                     Err(_) => 0,
                 }
             } else {
@@ -1415,9 +2027,18 @@ mod tests {
         let team_dir = tmp.path().join("teamclaw-team");
         std::fs::create_dir_all(&team_dir).unwrap();
 
-        let result = join_team_drive(&mut node, "garbage-not-a-ticket", team_dir.to_str().unwrap(), tmp.path().to_str().unwrap()).await;
+        let result = join_team_drive(
+            &mut node,
+            "garbage-not-a-ticket",
+            team_dir.to_str().unwrap(),
+            tmp.path().to_str().unwrap(),
+        )
+        .await;
         assert!(result.is_err(), "should fail with invalid ticket");
-        assert!(result.unwrap_err().contains("Invalid ticket"), "error should mention invalid ticket");
+        assert!(
+            result.unwrap_err().contains("Invalid ticket"),
+            "error should mention invalid ticket"
+        );
 
         node.shutdown().await;
     }
@@ -1439,18 +2060,25 @@ mod tests {
             &mut node,
             team_dir.to_str().unwrap(),
             tmp.path().to_str().unwrap(),
-            None, None, None,
-        ).await.unwrap();
+            None, None, None, None, None, None,
+        )
+        .await
+        .unwrap();
 
         assert!(!ticket.is_empty(), "ticket should not be empty");
         // DocTicket should be parseable
-        assert!(ticket.parse::<iroh_docs::DocTicket>().is_ok(), "should be a valid DocTicket");
+        assert!(
+            ticket.parse::<iroh_docs::DocTicket>().is_ok(),
+            "should be a valid DocTicket"
+        );
 
         // Verify config was written with new fields
-        let config = read_p2p_config(tmp.path().to_str().unwrap()).unwrap().unwrap();
+        let config = read_p2p_config(tmp.path().to_str().unwrap())
+            .unwrap()
+            .unwrap();
         assert!(config.namespace_id.is_some());
         assert!(config.doc_ticket.is_some());
-        assert_eq!(config.role.as_deref(), Some("owner"));
+        assert_eq!(config.role, Some(MemberRole::Owner));
 
         node.shutdown().await;
     }
@@ -1464,7 +2092,7 @@ mod tests {
             enabled: true,
             namespace_id: Some("test-ns".to_string()),
             doc_ticket: Some("test-ticket".to_string()),
-            role: Some("owner".to_string()),
+            role: Some(MemberRole::Owner),
             ..Default::default()
         };
         write_p2p_config(workspace, Some(&config)).unwrap();
@@ -1492,15 +2120,40 @@ mod tests {
         let member_id = "was-a-member-789";
 
         let members = vec![
-            TeamMember { node_id: "owner-456".to_string(), name: String::new(), label: "Owner".to_string(), platform: "macos".to_string(), arch: "aarch64".to_string(), hostname: "mac".to_string(), added_at: "2026-01-01T00:00:00Z".to_string() },
-            TeamMember { node_id: member_id.to_string(), name: String::new(), label: "Member".to_string(), platform: "linux".to_string(), arch: "x86_64".to_string(), hostname: "dev".to_string(), added_at: "2026-01-02T00:00:00Z".to_string() },
+            TeamMember {
+                node_id: "owner-456".to_string(),
+                name: String::new(),
+                role: MemberRole::Owner,
+                label: "Owner".to_string(),
+                platform: "macos".to_string(),
+                arch: "aarch64".to_string(),
+                hostname: "mac".to_string(),
+                added_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+            TeamMember {
+                node_id: member_id.to_string(),
+                name: String::new(),
+                role: MemberRole::Editor,
+                label: "Member".to_string(),
+                platform: "linux".to_string(),
+                arch: "x86_64".to_string(),
+                hostname: "dev".to_string(),
+                added_at: "2026-01-02T00:00:00Z".to_string(),
+            },
         ];
         write_members_manifest(team_dir.to_str().unwrap(), "owner-456", &members).unwrap();
         assert!(check_join_authorization(team_dir.to_str().unwrap(), member_id).is_ok());
 
-        let members_after = vec![
-            TeamMember { node_id: "owner-456".to_string(), name: String::new(), label: "Owner".to_string(), platform: "macos".to_string(), arch: "aarch64".to_string(), hostname: "mac".to_string(), added_at: "2026-01-01T00:00:00Z".to_string() },
-        ];
+        let members_after = vec![TeamMember {
+            node_id: "owner-456".to_string(),
+            name: String::new(),
+            role: MemberRole::Owner,
+            label: "Owner".to_string(),
+            platform: "macos".to_string(),
+            arch: "aarch64".to_string(),
+            hostname: "mac".to_string(),
+            added_at: "2026-01-01T00:00:00Z".to_string(),
+        }];
         write_members_manifest(team_dir.to_str().unwrap(), "owner-456", &members_after).unwrap();
 
         let result = check_join_authorization(team_dir.to_str().unwrap(), member_id);
@@ -1516,8 +2169,26 @@ mod tests {
 
         let joiner_id = "joiner-node-123";
         let members = vec![
-            TeamMember { node_id: "owner-456".to_string(), name: String::new(), label: "Owner".to_string(), platform: "macos".to_string(), arch: "aarch64".to_string(), hostname: "mac".to_string(), added_at: "2026-01-01T00:00:00Z".to_string() },
-            TeamMember { node_id: joiner_id.to_string(), name: String::new(), label: "Joiner".to_string(), platform: "linux".to_string(), arch: "x86_64".to_string(), hostname: "dev".to_string(), added_at: "2026-01-02T00:00:00Z".to_string() },
+            TeamMember {
+                node_id: "owner-456".to_string(),
+                name: String::new(),
+                role: MemberRole::Owner,
+                label: "Owner".to_string(),
+                platform: "macos".to_string(),
+                arch: "aarch64".to_string(),
+                hostname: "mac".to_string(),
+                added_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+            TeamMember {
+                node_id: joiner_id.to_string(),
+                name: String::new(),
+                role: MemberRole::Editor,
+                label: "Joiner".to_string(),
+                platform: "linux".to_string(),
+                arch: "x86_64".to_string(),
+                hostname: "dev".to_string(),
+                added_at: "2026-01-02T00:00:00Z".to_string(),
+            },
         ];
         write_members_manifest(team_dir.to_str().unwrap(), "owner-456", &members).unwrap();
 
@@ -1531,16 +2202,27 @@ mod tests {
         let team_dir = tmp.path().join("teamclaw-team");
         std::fs::create_dir_all(&team_dir).unwrap();
 
-        let members = vec![
-            TeamMember { node_id: "owner-456".to_string(), name: String::new(), label: "Owner".to_string(), platform: "macos".to_string(), arch: "aarch64".to_string(), hostname: "mac".to_string(), added_at: "2026-01-01T00:00:00Z".to_string() },
-        ];
+        let members = vec![TeamMember {
+            node_id: "owner-456".to_string(),
+            name: String::new(),
+            role: MemberRole::Owner,
+            label: "Owner".to_string(),
+            platform: "macos".to_string(),
+            arch: "aarch64".to_string(),
+            hostname: "mac".to_string(),
+            added_at: "2026-01-01T00:00:00Z".to_string(),
+        }];
         write_members_manifest(team_dir.to_str().unwrap(), "owner-456", &members).unwrap();
 
         let result = check_join_authorization(team_dir.to_str().unwrap(), "unauthorized-789");
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("Not authorized"), "error: {}", err);
-        assert!(err.contains("unauthorized-789"), "should include joiner's NodeId: {}", err);
+        assert!(
+            err.contains("unauthorized-789"),
+            "should include joiner's NodeId: {}",
+            err
+        );
     }
 
     #[test]
@@ -1550,7 +2232,10 @@ mod tests {
         std::fs::create_dir_all(&team_dir).unwrap();
 
         let result = check_join_authorization(team_dir.to_str().unwrap(), "any-node-id");
-        assert!(result.is_ok(), "should succeed without manifest (backwards compat)");
+        assert!(
+            result.is_ok(),
+            "should succeed without manifest (backwards compat)"
+        );
     }
 
     #[test]
@@ -1562,8 +2247,26 @@ mod tests {
 
         let owner_id = "owner-123";
         let members = vec![
-            TeamMember { node_id: owner_id.to_string(), name: String::new(), label: "Owner".to_string(), platform: "macos".to_string(), arch: "aarch64".to_string(), hostname: "mac".to_string(), added_at: "2026-01-01T00:00:00Z".to_string() },
-            TeamMember { node_id: "member-456".to_string(), name: String::new(), label: "Dev".to_string(), platform: "linux".to_string(), arch: "x86_64".to_string(), hostname: "dev".to_string(), added_at: "2026-01-02T00:00:00Z".to_string() },
+            TeamMember {
+                node_id: owner_id.to_string(),
+                name: String::new(),
+                role: MemberRole::Owner,
+                label: "Owner".to_string(),
+                platform: "macos".to_string(),
+                arch: "aarch64".to_string(),
+                hostname: "mac".to_string(),
+                added_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+            TeamMember {
+                node_id: "member-456".to_string(),
+                name: String::new(),
+                role: MemberRole::Editor,
+                label: "Dev".to_string(),
+                platform: "linux".to_string(),
+                arch: "x86_64".to_string(),
+                hostname: "dev".to_string(),
+                added_at: "2026-01-02T00:00:00Z".to_string(),
+            },
         ];
         let config = P2pConfig {
             enabled: true,
@@ -1574,7 +2277,13 @@ mod tests {
         write_p2p_config(workspace, Some(&config)).unwrap();
         write_members_manifest(team_dir.to_str().unwrap(), owner_id, &members).unwrap();
 
-        remove_member_from_team(workspace, team_dir.to_str().unwrap(), owner_id, "member-456").unwrap();
+        remove_member_from_team(
+            workspace,
+            team_dir.to_str().unwrap(),
+            owner_id,
+            "member-456",
+        )
+        .unwrap();
 
         let config = read_p2p_config(workspace).unwrap().unwrap();
         assert_eq!(config.allowed_members.len(), 1);
@@ -1592,12 +2301,22 @@ mod tests {
         let config = P2pConfig {
             enabled: true,
             owner_node_id: Some(owner_id.to_string()),
-            allowed_members: vec![TeamMember { node_id: owner_id.to_string(), name: String::new(), label: "Owner".to_string(), platform: "macos".to_string(), arch: "aarch64".to_string(), hostname: "mac".to_string(), added_at: "2026-01-01T00:00:00Z".to_string() }],
+            allowed_members: vec![TeamMember {
+                node_id: owner_id.to_string(),
+                name: String::new(),
+                role: MemberRole::Owner,
+                label: "Owner".to_string(),
+                platform: "macos".to_string(),
+                arch: "aarch64".to_string(),
+                hostname: "mac".to_string(),
+                added_at: "2026-01-01T00:00:00Z".to_string(),
+            }],
             ..Default::default()
         };
         write_p2p_config(workspace, Some(&config)).unwrap();
 
-        let result = remove_member_from_team(workspace, team_dir.to_str().unwrap(), owner_id, owner_id);
+        let result =
+            remove_member_from_team(workspace, team_dir.to_str().unwrap(), owner_id, owner_id);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Cannot remove the team owner"));
     }
@@ -1616,7 +2335,12 @@ mod tests {
         };
         write_p2p_config(workspace, Some(&config)).unwrap();
 
-        let result = remove_member_from_team(workspace, team_dir.to_str().unwrap(), "not-owner", "some-member");
+        let result = remove_member_from_team(
+            workspace,
+            team_dir.to_str().unwrap(),
+            "not-owner",
+            "some-member",
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Only the team owner"));
     }
@@ -1632,6 +2356,7 @@ mod tests {
         let owner_member = TeamMember {
             node_id: owner_id.to_string(),
             name: String::new(),
+            role: MemberRole::Owner,
             label: "Owner".to_string(),
             platform: "macos".to_string(),
             arch: "aarch64".to_string(),
@@ -1651,6 +2376,7 @@ mod tests {
         let new_member = TeamMember {
             node_id: "new-member-456".to_string(),
             name: "Alice".to_string(),
+            role: MemberRole::Editor,
             label: "Developer".to_string(),
             platform: "linux".to_string(),
             arch: "x86_64".to_string(),
@@ -1662,7 +2388,9 @@ mod tests {
         let config = read_p2p_config(workspace).unwrap().unwrap();
         assert_eq!(config.allowed_members.len(), 2);
 
-        let manifest = read_members_manifest(team_dir.to_str().unwrap()).unwrap().unwrap();
+        let manifest = read_members_manifest(team_dir.to_str().unwrap())
+            .unwrap()
+            .unwrap();
         assert_eq!(manifest.members.len(), 2);
         assert_eq!(manifest.members[1].node_id, "new-member-456");
     }
@@ -1684,13 +2412,19 @@ mod tests {
         let member = TeamMember {
             node_id: "new-member".to_string(),
             name: String::new(),
+            role: MemberRole::Editor,
             label: "Hacker".to_string(),
             platform: "linux".to_string(),
             arch: "x86_64".to_string(),
             hostname: "hack-box".to_string(),
             added_at: "2026-01-01T00:00:00Z".to_string(),
         };
-        let result = add_member_to_team(workspace, team_dir.to_str().unwrap(), "not-the-owner", member);
+        let result = add_member_to_team(
+            workspace,
+            team_dir.to_str().unwrap(),
+            "not-the-owner",
+            member,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Only the team owner"));
     }
@@ -1706,6 +2440,7 @@ mod tests {
         let owner_member = TeamMember {
             node_id: owner_id.to_string(),
             name: String::new(),
+            role: MemberRole::Owner,
             label: "Owner".to_string(),
             platform: "macos".to_string(),
             arch: "aarch64".to_string(),
@@ -1719,9 +2454,19 @@ mod tests {
             ..Default::default()
         };
         write_p2p_config(workspace, Some(&config)).unwrap();
-        write_members_manifest(team_dir.to_str().unwrap(), owner_id, &[owner_member.clone()]).unwrap();
+        write_members_manifest(
+            team_dir.to_str().unwrap(),
+            owner_id,
+            &[owner_member.clone()],
+        )
+        .unwrap();
 
-        let result = add_member_to_team(workspace, team_dir.to_str().unwrap(), owner_id, owner_member);
+        let result = add_member_to_team(
+            workspace,
+            team_dir.to_str().unwrap(),
+            owner_id,
+            owner_member,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("already exists"));
     }
@@ -1745,8 +2490,10 @@ mod tests {
             &mut node,
             team_dir.to_str().unwrap(),
             workspace,
-            None, None, None,
-        ).await.unwrap();
+            None, None, None, None, None, None,
+        )
+        .await
+        .unwrap();
 
         assert!(!ticket.is_empty(), "should return a ticket");
 
@@ -1754,7 +2501,7 @@ mod tests {
         assert_eq!(config.owner_node_id.as_deref(), Some(node_id.as_str()));
         assert_eq!(config.allowed_members.len(), 1);
         assert_eq!(config.allowed_members[0].node_id, node_id);
-        assert_eq!(config.role.as_deref(), Some("owner"));
+        assert_eq!(config.role, Some(MemberRole::Owner));
 
         let manifest = read_members_manifest(team_dir.to_str().unwrap()).unwrap();
         assert!(manifest.is_some(), "manifest should exist");
@@ -1776,6 +2523,7 @@ mod tests {
             TeamMember {
                 node_id: owner_id.to_string(),
                 name: "Owner".to_string(),
+                role: MemberRole::Owner,
                 label: "Owner".to_string(),
                 platform: "macos".to_string(),
                 arch: "aarch64".to_string(),
@@ -1785,6 +2533,7 @@ mod tests {
             TeamMember {
                 node_id: "member-node-id-456".to_string(),
                 name: "Dev".to_string(),
+                role: MemberRole::Editor,
                 label: "Developer".to_string(),
                 platform: "linux".to_string(),
                 arch: "x86_64".to_string(),
@@ -1820,6 +2569,7 @@ mod tests {
             allowed_members: vec![TeamMember {
                 node_id: "abc123def456".to_string(),
                 name: "Alice".to_string(),
+                role: MemberRole::Owner,
                 label: "Owner Device".to_string(),
                 platform: "macos".to_string(),
                 arch: "aarch64".to_string(),
@@ -1828,7 +2578,7 @@ mod tests {
             }],
             namespace_id: Some("ns-123".to_string()),
             doc_ticket: Some("docticket-abc".to_string()),
-            role: Some("owner".to_string()),
+            role: Some(MemberRole::Owner),
         };
         write_p2p_config(workspace, Some(&config)).unwrap();
 
@@ -1836,7 +2586,7 @@ mod tests {
         assert_eq!(loaded.owner_node_id.as_deref(), Some("abc123def456"));
         assert_eq!(loaded.namespace_id.as_deref(), Some("ns-123"));
         assert_eq!(loaded.doc_ticket.as_deref(), Some("docticket-abc"));
-        assert_eq!(loaded.role.as_deref(), Some("owner"));
+        assert_eq!(loaded.role, Some(MemberRole::Owner));
     }
 
     #[test]
@@ -1854,7 +2604,11 @@ mod tests {
 
         let node_id = get_node_id(&node);
         assert!(!node_id.is_empty(), "NodeId should not be empty");
-        assert!(node_id.len() >= 52, "NodeId should be a long hex string, got: {}", node_id);
+        assert!(
+            node_id.len() >= 52,
+            "NodeId should be a long hex string, got: {}",
+            node_id
+        );
 
         node.shutdown().await;
     }
@@ -1884,7 +2638,11 @@ mod tests {
         assert!(!loaded.publish_enabled);
 
         // Verify other config keys are preserved
-        let config_path = format!("{}/{}/teamclaw.json", workspace, crate::commands::TEAMCLAW_DIR);
+        let config_path = format!(
+            "{}/{}/teamclaw.json",
+            workspace,
+            crate::commands::TEAMCLAW_DIR
+        );
         let content = std::fs::read_to_string(&config_path).unwrap();
         let mut json: serde_json::Value = serde_json::from_str(&content).unwrap();
         json.as_object_mut().unwrap().insert(
@@ -1901,7 +2659,10 @@ mod tests {
 
         let content = std::fs::read_to_string(&config_path).unwrap();
         let json: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert!(json.get("team").is_some(), "team config should be preserved");
+        assert!(
+            json.get("team").is_some(),
+            "team config should be preserved"
+        );
         assert!(json.get("p2p").is_some(), "p2p config should exist");
         assert_eq!(json["team"]["gitUrl"], "https://example.com/repo.git");
         assert_eq!(json["p2p"]["enabled"], false);

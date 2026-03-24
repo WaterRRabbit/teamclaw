@@ -33,6 +33,11 @@ type SessionGet = () => SessionState;
 // Track retry counts for message completion deferrals (per messageId)
 const completionRetryCount = new Map<string, number>();
 
+// Debug logging — off by default; enable via: localStorage.setItem('debug-streaming', '1')
+const DEBUG = () => {
+  try { return localStorage.getItem('debug-streaming') === '1' } catch { return false }
+};
+
 export function createMessageHandlers(set: SessionSet, get: SessionGet) {
   return {
     handleMessageCreated: (event: MessageCreatedEvent) => {
@@ -94,7 +99,7 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
           // CRITICAL: Preserve existing streamingContent to avoid losing already-revealed text!
           const currentStreamingContent = useStreamingStore.getState().streamingContent;
           useStreamingStore.getState().setStreaming(event.id, currentStreamingContent);
-          console.log("[MessageCreated] Set streaming synchronously for pending message:", event.id, "preserving", currentStreamingContent.length, "chars");
+          if (DEBUG()) console.log("[MessageCreated] Pending → real:", event.id);
           
           set((state) => {
             const session = getSessionById(event.sessionId);
@@ -126,13 +131,12 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
           const messageExists = session?.messages.some((m) => m.id === event.id);
 
           if (messageExists) {
-            console.log("[MessageCreated] Message already exists, resuming streaming:", event.id);
+            if (DEBUG()) console.log("[MessageCreated] Resuming streaming:", event.id);
             const existingMessage = session?.messages.find(m => m.id === event.id);
-            
+
             // CRITICAL: Set streaming BEFORE updating session state.
             // This ensures streamingMessageId is set synchronously before any delta events arrive.
             useStreamingStore.getState().setStreaming(event.id, existingMessage?.content || "");
-            console.log("[MessageCreated] Set streaming synchronously for existing message:", event.id);
             
             // CRITICAL: Restore streaming state when message already exists.
             // This handles retry scenarios where:
@@ -141,7 +145,7 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
             // 3. OpenCode resends message.updated after retry succeeds
             // We restore streaming to ensure subsequent delta events are processed.
             if (existingMessage && !existingMessage.isStreaming) {
-              console.log("[MessageCreated] Restoring isStreaming flag for:", event.id);
+              if (DEBUG()) console.log("[MessageCreated] Restoring isStreaming for:", event.id);
               set((state) => {
                 const session = getSessionById(event.sessionId);
                 if (!session) return state;
@@ -163,7 +167,7 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
               });
             }
           } else {
-            console.log("[MessageCreated] Creating new assistant message:", event.id);
+            if (DEBUG()) console.log("[MessageCreated] New assistant message:", event.id);
             const newMessage: Message = {
               id: event.id,
               sessionId: event.sessionId,
@@ -179,7 +183,7 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
             // If called inside set(), Zustand batching may delay the update, causing delta events
             // to see streamingMessageId=null and get ignored.
             useStreamingStore.getState().setStreaming(event.id);
-            console.log("[MessageCreated] Set streaming synchronously for:", event.id);
+            if (DEBUG()) console.log("[MessageCreated] Set streaming for:", event.id);
 
             set((state) => {
               const session = getSessionById(event.sessionId);
@@ -205,18 +209,9 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
 
     handleMessagePartCreated: (event: MessagePartCreatedEvent) => {
       const { activeSessionId } = get();
-      let { streamingMessageId, streamingContent } = useStreamingStore.getState();
+      let { streamingMessageId } = useStreamingStore.getState();
       
-      console.log("[PartCreated] Event received:", {
-        messageId: event.messageId,
-        partId: event.partId,
-        type: event.type,
-        contentLength: event.content?.length || event.text?.length || 0,
-        streamingMessageId,
-        activeSessionId,
-        currentStreamingContentLength: streamingContent.length,
-        willProcess: event.messageId === streamingMessageId,
-      });
+      if (DEBUG()) console.log("[PartCreated]", event.type, event.partId);
       
       // CRITICAL: Auto-recovery for lost streamingMessageId (same as handleMessagePartUpdated)
       if (event.messageId !== streamingMessageId && activeSessionId) {
@@ -230,9 +225,8 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
           });
           useStreamingStore.getState().setStreaming(event.messageId, targetMessage.content || "");
           streamingMessageId = event.messageId;
-          streamingContent = targetMessage.content || "";
         } else {
-          console.log("[PartCreated] Ignoring part for non-streaming message:", event.messageId);
+          if (DEBUG()) console.log("[PartCreated] Ignoring part for non-streaming message:", event.messageId);
           return;
         }
       }
@@ -242,111 +236,87 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
 
       clearMessageTimeout();
 
-      set((state) => {
-        const session = getSessionById(activeSessionId);
-        if (!session) return state;
+      // PERF: Update sessionLookupCache directly instead of going through sessions.map().
+      // PartCreated fires 5-20x per conversation (per text/tool part). The old code did:
+      //   1. findIndex O(n) on messages
+      //   2. findIndex O(p) on parts
+      //   3. parts.map O(p) to replace one part
+      //   4. sessions.map O(s) to replace one session  ← triggers all session selectors
+      // Now: direct index access + cache-only write. Session store syncs on completion.
+      const session = getSessionById(activeSessionId);
+      if (!session) return;
 
-        const msgIndex = session.messages.findIndex((m) => m.id === event.messageId);
-        if (msgIndex === -1) return state;
+      const msgIndex = session.messages.findIndex((m) => m.id === event.messageId);
+      if (msgIndex === -1) return;
 
-        const messages = [...session.messages];
-        const msg = { ...messages[msgIndex] };
+      const messages = session.messages.slice();
+      const msg = { ...messages[msgIndex] };
 
-        const existingPartIndex = msg.parts.findIndex(
-          (p) => p.id === event.partId,
+      const newPart: MessagePart = {
+        id: event.partId,
+        type: event.type as MessagePart["type"],
+        content: event.content,
+        text: event.text || event.content,
+        tool: event.tool,
+        result: event.result,
+      };
+
+      const existingPartIndex = msg.parts.findIndex(
+        (p) => p.id === event.partId,
+      );
+      if (existingPartIndex !== -1) {
+        const parts = msg.parts.slice();
+        parts[existingPartIndex] = newPart;
+        msg.parts = parts;
+      } else {
+        msg.parts = [...msg.parts, newPart];
+      }
+
+      if (event.type === "tool_call" && event.tool) {
+        const existingToolCall = msg.toolCalls?.find(
+          (tc) => tc.id === event.tool!.id,
         );
-
-        const newPart: MessagePart = {
-          id: event.partId,
-          type: event.type as MessagePart["type"],
-          content: event.content,
-          text: event.text || event.content,
-          tool: event.tool,
-          result: event.result,
-        };
-
-        if (existingPartIndex !== -1) {
-          msg.parts = msg.parts.map((p, i) =>
-            i === existingPartIndex ? newPart : p,
-          );
-        } else {
-          msg.parts = [...msg.parts, newPart];
+        if (!existingToolCall) {
+          msg.toolCalls = [
+            ...(msg.toolCalls || []),
+            {
+              id: event.tool.id,
+              name: event.tool.name,
+              status: "calling",
+              arguments: event.tool.input,
+              startTime: new Date(),
+            },
+          ];
         }
+      }
 
-        if (event.type === "tool_call" && event.tool) {
-          const existingToolCall = msg.toolCalls?.find(
-            (tc) => tc.id === event.tool!.id,
-          );
-          if (!existingToolCall) {
-            msg.toolCalls = [
-              ...(msg.toolCalls || []),
-              {
-                id: event.tool.id,
-                name: event.tool.name,
-                status: "calling",
-                arguments: event.tool.input,
-                startTime: new Date(),
-              },
-            ];
-          }
-        }
+      messages[msgIndex] = msg;
+      const newSession = { ...session, messages };
 
-        if (event.type === "text" && event.content) {
-          // CRITICAL ARCHITECTURE CHANGE: Do NOT update msg.content during streaming!
-          // 
-          // ROOT CAUSE OF DUPLICATION:
-          // - Text snapshots from OpenCode contain full content
-          // - If we set msg.content = snapshot here, then typewriter continues appending buffer
-          // - Result: msg.content = snapshot + buffer remainder → DUPLICATION
-          // 
-          // CORRECT STRATEGY - Single Source of Truth:
-          // - During streaming: Only streamingContent exists (from delta buffer)
-          // - After completion: Only msg.content exists (from parts)
-          // - NEVER mix the two
-          // 
-          // Therefore: Do NOT touch msg.content here. Only update parts.
-          // Let handleMessageCompleted build the final msg.content from parts.
-          
-          console.log("[PartCreated] Text snapshot received (NOT updating msg.content during streaming):", {
-            snapshotLength: event.content.length,
-            partsCount: msg.parts.length,
-            streamingContentLength: useStreamingStore.getState().streamingContent.length,
-          });
-          
-          // CRITICAL: Trigger scroll after tool completion by incrementing streamingUpdateTrigger
-          // Tool calls can add significant content (tool output, result summaries).
-          // We need to signal MessageList to re-check scroll position.
-          const currentTrigger = useStreamingStore.getState().streamingUpdateTrigger;
-          useStreamingStore.setState({ streamingUpdateTrigger: currentTrigger + 1 });
-          console.log("[PartCreated] Triggered scroll update (trigger:", currentTrigger + 1, ")");
-        }
+      // Write to cache only — no sessions.map() needed during streaming.
+      // The session store will be synced when handleMessageCompleted runs.
+      sessionLookupCache.set(activeSessionId, newSession);
 
-        messages[msgIndex] = msg;
-        const newSession = { ...session, messages };
+      if (event.type === "text" && event.content) {
+        // Trigger scroll after tool completion (text snapshot arrives after tool output)
+        const currentTrigger = useStreamingStore.getState().streamingUpdateTrigger;
+        useStreamingStore.setState({ streamingUpdateTrigger: currentTrigger + 1 });
+      }
 
-        sessionLookupCache.set(activeSessionId, newSession);
-
-        return {
+      // For tool_call parts, we need to update session store so ToolCallCard renders.
+      // Text parts don't need this — they're displayed via streamingContent.
+      if (event.type === "tool_call" || event.type === "step-start" || event.type === "step-finish") {
+        set((state) => ({
           sessions: state.sessions.map((s) =>
             s.id === activeSessionId ? newSession : s,
           ),
-        };
-      });
+        }));
+      }
     },
 
     handleMessagePartUpdated: (event: MessagePartUpdatedEvent) => {
       const { activeSessionId } = get();
       let { streamingMessageId } = useStreamingStore.getState();
-      
-      console.log("[PartUpdated] Event received:", {
-        messageId: event.messageId,
-        partId: event.partId,
-        type: event.type,
-        deltaLength: event.delta?.length,
-        streamingMessageId,
-        activeSessionId,
-        willProcess: event.messageId === streamingMessageId,
-      });
       
       // CRITICAL: Auto-recovery for lost streamingMessageId
       // In rapid message succession (e.g., tool call → new message), streamingMessageId
@@ -367,7 +337,7 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
           useStreamingStore.getState().setStreaming(event.messageId, targetMessage.content || "");
           streamingMessageId = event.messageId; // Update local variable
         } else {
-          console.log("[PartUpdated] Ignoring delta for non-streaming message:", event.messageId);
+          if (DEBUG()) console.log("[PartUpdated] Ignoring delta for non-streaming message:", event.messageId);
           return;
         }
       }
@@ -377,11 +347,9 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
       clearMessageTimeout();
 
       if (event.type === "text_delta" && event.delta) {
-        console.log("[PartUpdated] Appending text delta:", event.delta.length, "chars");
         appendTextBuffer(event.delta);
         scheduleTypewriter();
       } else if (event.type === "reasoning_delta" && event.delta) {
-        console.log("[PartUpdated] Appending reasoning delta:", event.delta.length, "chars");
         appendReasoningBuffer(event.partId, event.delta);
         scheduleTypewriter();
       }
@@ -391,14 +359,7 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
       const { streamingMessageId: currentStreamingId } = useStreamingStore.getState();
       const retryCount = completionRetryCount.get(event.messageId) || 0;
       
-      console.log("[MessageCompleted] Event received:", {
-        messageId: event.messageId,
-        sessionId: event.sessionId,
-        finalContentPreview: event.finalContent?.slice(0, 80),
-        retryCount,
-        currentStreamingId,
-        isForDifferentMessage: currentStreamingId !== event.messageId,
-      });
+      if (DEBUG()) console.log("[MessageCompleted]", event.messageId, { retryCount });
       
       // CRITICAL: Ignore completion events for non-streaming messages
       // This prevents stale/duplicate message.completed events (from retries or out-of-order delivery)
@@ -419,7 +380,7 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
         // New strategy: 20 retries * 100ms = 2000ms max wait
         // This handles buffers up to ~360 characters while keeping typewriter effect
         if (retryCount < 20) {
-          console.log("[MessageCompleted] Buffer has content, deferring 100ms (retry:", retryCount + 1, ")");
+          if (DEBUG()) console.log("[MessageCompleted] Deferring, retry:", retryCount + 1);
           completionRetryCount.set(event.messageId, retryCount + 1);
           setTimeout(() => {
             get().handleMessageCompleted(event);
@@ -429,7 +390,7 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
         
         // After 2000ms total, force flush to ensure all content is displayed
         // This should rarely happen, only for extremely long messages
-        console.log("[MessageCompleted] Max deferrals reached (2s), force flushing remaining buffer");
+        if (DEBUG()) console.log("[MessageCompleted] Max deferrals, force flushing");
         const flushedContent = flushAllPending();
         // Use flushed content if we don't have finalContent from server
         if (!event.finalContent && flushedContent) {
@@ -441,12 +402,6 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
       completionRetryCount.delete(event.messageId);
 
       // CRITICAL: Get streaming state AFTER flush to include flushed content
-      const latestStreamingState = useStreamingStore.getState();
-      console.log("[MessageCompleted] Streaming state after flush:", {
-        streamingMessageId: latestStreamingState.streamingMessageId,
-        streamingContentLength: latestStreamingState.streamingContent.length,
-        streamingContentPreview: latestStreamingState.streamingContent.slice(-80),
-      });
 
       set((state) => {
         const currentSession = getSessionById(event.sessionId);
@@ -475,11 +430,7 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
         // Fallback: If parts are empty, try event.finalContent or API fetch
         const finalContent = textPartsContent || event.finalContent || "";
         
-        console.log("[MessageCompleted] Building final content from parts:", {
-          partsCount: messages[msgIndex].parts.filter(p => p.type === "text").length,
-          finalContentLength: finalContent.length,
-          finalContentPreview: finalContent.slice(0, 100),
-        });
+        if (DEBUG()) console.log("[MessageCompleted] Final content:", finalContent.length, "chars");
 
         // If content is still empty after all fallbacks, fetch from API asynchronously
         if (!finalContent || finalContent.trim() === '') {
@@ -556,22 +507,10 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
         // In rapid succession scenarios, a new message may have started streaming
         // within the 100ms delay. We must not clear the new message's streamingMessageId.
         const completedMessageId = event.messageId;
-        console.log("[MessageCompleted] Scheduling delayed clear for:", completedMessageId, "in 100ms");
         setTimeout(() => {
           const { streamingMessageId: currentStreamingId } = useStreamingStore.getState();
-          console.log("[MessageCompleted] Delayed clear callback executing:", {
-            completedMessageId,
-            currentStreamingId,
-            willClear: currentStreamingId === completedMessageId,
-          });
           if (currentStreamingId === completedMessageId) {
-            console.log("[MessageCompleted] Clearing streaming for:", completedMessageId);
             useStreamingStore.getState().clearStreaming();
-          } else {
-            console.log("[MessageCompleted] Skipping clear (new message started):", {
-              completedMessageId,
-              currentStreamingId,
-            });
           }
         }, 100);
         
@@ -598,7 +537,7 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
               
               if (tokens > 0 || cost > 0) {
                 await useLocalStatsStore.getState().addTokenUsage(workspacePath, tokens, cost);
-                console.log(`[LocalStats] Updated from message completion: ${tokens} tokens, $${cost.toFixed(4)}`);
+                if (DEBUG()) console.log(`[LocalStats] ${tokens} tokens, $${cost.toFixed(4)}`);
               }
             }
           } catch (error) {
@@ -610,51 +549,14 @@ export function createMessageHandlers(set: SessionSet, get: SessionGet) {
       // Process next message in queue after completion
       setTimeout(() => {
         const { messageQueue, sendMessage: send } = get();
-        console.log("[MessageCompleted] queue check:", { queueLength: messageQueue.length });
         if (messageQueue.length > 0) {
           const nextMessage = messageQueue[0];
-          console.log("[MessageCompleted] processing next:", nextMessage.content.slice(0, 30));
           set((state) => ({
             messageQueue: state.messageQueue.slice(1),
           }));
           send(nextMessage.content);
         }
       }, 300);
-
-      // Memory extraction: analyze completed conversation for memorizable content
-      const memorySessionId = localStorage.getItem('teamclaw-memory-session-id')
-      if (event.sessionId !== memorySessionId) {
-        setTimeout(async () => {
-          try {
-            const { shouldExtractMemory, extractMemories, isExtractionDebounced } = await import('@/lib/memory-extraction')
-            const { useWorkspaceStore } = await import('./workspace')
-            const workspacePath = useWorkspaceStore.getState().workspacePath
-            if (!workspacePath) return
-
-            const { useKnowledgeStore } = await import('./knowledge')
-            const config = useKnowledgeStore.getState().config
-            if (config?.memoryEnabled === false) return
-            if (config?.memoryAutoExtract === false) return
-
-            if (isExtractionDebounced(event.sessionId)) return
-
-            const session = getSessionById(event.sessionId)
-            if (!session) return
-
-            const conversationMessages = session.messages
-              .filter(m => m.role === 'user' || m.role === 'assistant')
-              .filter(m => m.content && m.content.trim())
-              .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
-
-            if (shouldExtractMemory(conversationMessages)) {
-              console.log('[Memory] Auto-extracting memories for session:', event.sessionId)
-              extractMemories(conversationMessages, event.sessionId, workspacePath)
-            }
-          } catch (error) {
-            console.error('[Memory] Auto-extraction trigger failed:', error)
-          }
-        }, 2000)
-      }
     },
   };
 }

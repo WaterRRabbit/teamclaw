@@ -19,6 +19,95 @@ import {
   attachPermissionToToolCall,
 } from "./session-internals";
 
+/**
+ * Cache of permission config from opencode.json.
+ * Maps permission name (e.g. "bash", "write") to its action ("allow" | "ask" | "deny").
+ */
+let _permConfigCache: Record<string, string> | null = null;
+let _permConfigLoading = false;
+
+async function loadPermissionConfig(): Promise<Record<string, string>> {
+  if (_permConfigCache) return _permConfigCache;
+  if (!isTauri()) return {};
+
+  const workspacePath = useWorkspaceStore.getState().workspacePath;
+  if (!workspacePath) return {};
+
+  if (_permConfigLoading) return {};
+  _permConfigLoading = true;
+
+  try {
+    const { readTextFile, exists } = await import("@tauri-apps/plugin-fs");
+    const configPath = `${workspacePath}/opencode.json`;
+    if (!(await exists(configPath))) return {};
+
+    const content = await readTextFile(configPath);
+    const config = JSON.parse(content);
+    if (config.permission && typeof config.permission === "object") {
+      _permConfigCache = config.permission;
+      return _permConfigCache!;
+    }
+  } catch {
+    // ignore read errors
+  } finally {
+    _permConfigLoading = false;
+  }
+  return {};
+}
+
+/**
+ * In-memory set of permission types the user has clicked "Always Allow" for
+ * during this app session. Prevents repeated dialogs for the same permission type.
+ */
+const _alwaysAllowedPermissions = new Set<string>();
+
+/**
+ * Write a permission as "allow" into opencode.json so OpenCode itself
+ * stops asking for this permission type entirely.
+ */
+async function setPermissionAllowInConfig(permissionType: string): Promise<void> {
+  if (!isTauri()) return;
+
+  const workspacePath = useWorkspaceStore.getState().workspacePath;
+  if (!workspacePath) return;
+
+  try {
+    const { readTextFile, writeTextFile, exists } = await import("@tauri-apps/plugin-fs");
+    const configPath = `${workspacePath}/opencode.json`;
+
+    let config: Record<string, unknown> = {};
+    if (await exists(configPath)) {
+      const content = await readTextFile(configPath);
+      config = JSON.parse(content);
+    }
+
+    const permission = (config.permission as Record<string, string>) || {};
+    if (permission[permissionType] === "allow") return; // already set
+
+    permission[permissionType] = "allow";
+    config.permission = permission;
+
+    await writeTextFile(configPath, JSON.stringify(config, null, 2));
+
+    // Update the in-memory cache
+    _permConfigCache = permission;
+
+    console.log("[Session] Set permission '%s' to 'allow' in opencode.json", permissionType);
+  } catch (err) {
+    console.error("[Session] Failed to update opencode.json permission:", err);
+  }
+}
+
+/** Pre-load the permission config cache. Call early so it's available synchronously later. */
+export function loadPermissionConfigCache(): void {
+  loadPermissionConfig().catch(() => { /* ignore */ });
+}
+
+/** Invalidate the permission config cache (call when config is saved). */
+export function invalidatePermissionConfigCache(): void {
+  _permConfigCache = null;
+}
+
 type SessionSet = (fn: ((state: SessionState) => Partial<SessionState>) | Partial<SessionState>) => void;
 type SessionGet = () => SessionState;
 
@@ -94,6 +183,24 @@ export function createPermissionActions(set: SessionSet, get: SessionGet) {
         return;
       }
 
+      // Check opencode.json permission config -- auto-authorize if set to "allow"
+      if (event.permission && _permConfigCache?.[event.permission] === "allow") {
+        const client = getOpenCodeClient();
+        client.replyPermission(event.id, { reply: "once" }).catch((err) => {
+          console.error("[Session] Failed to auto-reply permission from config:", err);
+        });
+        return;
+      }
+
+      // Check if this permission type was already "Always Allowed" during this session
+      if (event.permission && _alwaysAllowedPermissions.has(event.permission)) {
+        const client = getOpenCodeClient();
+        client.replyPermission(event.id, { reply: "always" }).catch((err) => {
+          console.error("[Session] Failed to auto-reply always-allowed permission:", err);
+        });
+        return;
+      }
+
       const {
         activeSessionId,
         sessions: currentSessions,
@@ -158,7 +265,7 @@ export function createPermissionActions(set: SessionSet, get: SessionGet) {
           reply: replyMap[decision],
         });
 
-        // Persist "always" decisions to opencode.db
+        // Persist "always" decisions to opencode.db and cache in memory
         if (decision === "always") {
           const { activeSessionId, pendingPermission } = get();
           const session = activeSessionId ? getSessionById(activeSessionId) : null;
@@ -184,6 +291,14 @@ export function createPermissionActions(set: SessionSet, get: SessionGet) {
             permEvent = pendingPermission;
           }
           if (permEvent) {
+            // Cache in memory so subsequent requests for same permission type are auto-approved
+            if (permEvent.permission) {
+              _alwaysAllowedPermissions.add(permEvent.permission);
+              // Write to opencode.json so OpenCode itself stops asking
+              setPermissionAllowInConfig(permEvent.permission).catch((err) => {
+                console.error("[Session] Failed to set permission in opencode.json:", err);
+              });
+            }
             persistAllowlistRule(permEvent).catch((err) => {
               console.error("[Session] Failed to persist allowlist rule to DB:", err);
             });
@@ -257,6 +372,26 @@ export function createPermissionActions(set: SessionSet, get: SessionGet) {
             });
           }
           return;
+        }
+
+        // Auto-authorize permissions that are set to "allow" in opencode.json or already "Always Allowed"
+        {
+          const remaining = permissions.filter((perm) => {
+            if (perm.permission && _permConfigCache?.[perm.permission] === "allow") {
+              client.replyPermission(perm.id, { reply: "once" }).catch((err) => {
+                console.error("[Session] Failed to auto-reply polled permission from config:", err);
+              });
+              return false;
+            }
+            if (perm.permission && _alwaysAllowedPermissions.has(perm.permission)) {
+              client.replyPermission(perm.id, { reply: "always" }).catch((err) => {
+                console.error("[Session] Failed to auto-reply polled always-allowed permission:", err);
+              });
+              return false;
+            }
+            return true;
+          });
+          if (remaining.length === 0) return;
         }
 
         const match = permissions.find((p) => p.sessionID === activeSessionId) || permissions[0];

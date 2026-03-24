@@ -46,16 +46,23 @@ impl DeliveryManager {
                 self.send_kook(&config, target, message).await?;
                 Ok(None)
             }
+            DeliveryChannel::Wechat => {
+                self.send_wechat(&config, target, message).await?;
+                Ok(None)
+            }
         }
     }
 
     /// Read the teamclaw.json config file from workspace
     fn read_teamclaw_config(&self) -> Result<serde_json::Value, String> {
-        let path = format!("{}/{}/teamclaw.json", self.workspace_path, crate::commands::TEAMCLAW_DIR);
+        let path = format!(
+            "{}/{}/teamclaw.json",
+            self.workspace_path,
+            crate::commands::TEAMCLAW_DIR
+        );
         let content = std::fs::read_to_string(&path)
             .map_err(|e| format!("Failed to read teamclaw.json: {}", e))?;
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse teamclaw.json: {}", e))
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse teamclaw.json: {}", e))
     }
 
     // ==================== Discord ====================
@@ -78,7 +85,10 @@ impl DeliveryManager {
             println!("[Cron Delivery] Discord DM to user: {}", user_id);
             gateway::discord::create_dm_channel(token, user_id).await?
         } else if target.starts_with("channel:") {
-            let ch_id = target.strip_prefix("channel:").unwrap_or(target).to_string();
+            let ch_id = target
+                .strip_prefix("channel:")
+                .unwrap_or(target)
+                .to_string();
             println!("[Cron Delivery] Discord channel: {}", ch_id);
             ch_id
         } else {
@@ -181,7 +191,10 @@ impl DeliveryManager {
             println!("[Cron Delivery] KOOK DM to user: {}", user_id);
             (user_id.to_string(), true)
         } else if target.starts_with("channel:") {
-            let ch_id = target.strip_prefix("channel:").unwrap_or(target).to_string();
+            let ch_id = target
+                .strip_prefix("channel:")
+                .unwrap_or(target)
+                .to_string();
             println!("[Cron Delivery] KOOK channel: {}", ch_id);
             (ch_id, false)
         } else {
@@ -200,6 +213,37 @@ impl DeliveryManager {
 
         println!("[Cron Delivery] KOOK message sent to {}", target);
         Ok(())
+    }
+
+    // ==================== WeChat ====================
+
+    /// Send via WeChat — delegates to gateway::wechat::send_text_message
+    async fn send_wechat(
+        &self,
+        config: &serde_json::Value,
+        target: &str,
+        message: &str,
+    ) -> Result<(), String> {
+        let bot_token = config["channels"]["wechat"]["botToken"]
+            .as_str()
+            .filter(|t| !t.is_empty())
+            .ok_or("WeChat bot token not configured")?;
+        let base_url = config["channels"]["wechat"]["baseUrl"]
+            .as_str()
+            .unwrap_or("https://ilinkai.weixin.qq.com");
+
+        // Look up context_token from persisted config
+        let context_token = config["channels"]["wechat"]["contextTokens"][target]
+            .as_str()
+            .ok_or_else(|| format!(
+                "No context_token for WeChat user '{}'. The user must send a message to the gateway first.",
+                target
+            ))?;
+
+        use crate::commands::gateway::wechat;
+        let client = reqwest::Client::new();
+        wechat::send_text_message(&client, base_url, bot_token, target, message, context_token)
+            .await
     }
 }
 

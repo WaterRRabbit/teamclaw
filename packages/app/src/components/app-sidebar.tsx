@@ -1,12 +1,14 @@
 import * as React from "react"
 import { useTranslation } from "react-i18next"
-import { Search, SquarePen, Settings, MessageSquare, Loader2, Archive, PanelLeftIcon, FolderOpen, Pencil, Ellipsis } from "lucide-react"
+import { Search, SquarePen, MessageSquare, Loader2, Archive, PanelLeftIcon, FolderOpen, Users, Pencil, Ellipsis, Clock } from "lucide-react"
 
 import { useSessionStore } from "@/stores/session"
 import { useStreamingStore } from "@/stores/streaming"
 import { useUIStore } from "@/stores/ui"
 import { useWorkspaceStore } from "@/stores/workspace"
 import { useTabsStore } from "@/stores/tabs"
+import { useCronStore } from "@/stores/cron"
+import { useTeamModeStore } from "@/stores/team-mode"
 import {
   Sidebar,
   SidebarContent,
@@ -133,6 +135,8 @@ export function SidebarIconGroup({ className }: { className?: string }) {
   const { toggleSidebar } = useSidebar()
   const createSession = useSessionStore(s => s.createSession)
   const workspacePath = useWorkspaceStore(s => s.workspacePath)
+  const showCronSessions = useCronStore(s => s.showCronSessions)
+  const toggleShowCronSessions = useCronStore(s => s.toggleShowCronSessions)
   const [isCreating, setIsCreating] = React.useState(false)
   const [searchOpen, setSearchOpen] = React.useState(false)
   
@@ -188,6 +192,21 @@ export function SidebarIconGroup({ className }: { className?: string }) {
         <Button
           variant="ghost"
           size="icon"
+          className={cn(
+            "h-7 w-7 transition-colors disabled:opacity-40",
+            showCronSessions
+              ? "text-foreground bg-muted"
+              : "text-muted-foreground hover:text-foreground"
+          )}
+          disabled={!hasWorkspace}
+          onClick={toggleShowCronSessions}
+          title={showCronSessions ? t('sidebar.showAllSessions', 'Show all sessions') : t('sidebar.showCronSessions', 'Show scheduled sessions')}
+        >
+          <Clock className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
           className="h-7 w-7 text-muted-foreground hover:text-foreground disabled:opacity-40"
           onClick={handleNewSession}
           disabled={isCreating || !hasWorkspace}
@@ -210,6 +229,7 @@ function WorkspaceSelectorButton() {
   const workspaceName = useWorkspaceStore(s => s.workspaceName)
   const isLoadingWorkspace = useWorkspaceStore(s => s.isLoadingWorkspace)
   const setWorkspace = useWorkspaceStore(s => s.setWorkspace)
+  const teamMode = useTeamModeStore(s => s.teamMode)
   const [isSelecting, setIsSelecting] = React.useState(false)
 
   const handleOpenFolder = async () => {
@@ -245,12 +265,14 @@ function WorkspaceSelectorButton() {
         <Button
           variant="ghost"
           size="sm"
-          className="h-7 gap-1.5 px-2 text-muted-foreground hover:text-foreground max-w-[140px]"
+          className="h-7 gap-1.5 px-2 text-muted-foreground hover:text-foreground max-w-[180px]"
           disabled={isLoading}
           onClick={handleOpenFolder}
         >
           {isLoading ? (
             <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+          ) : teamMode && workspaceName ? (
+            <Users className="h-4 w-4 shrink-0 text-blue-500" />
           ) : (
             <FolderOpen className="h-4 w-4 shrink-0" />
           )}
@@ -325,14 +347,21 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const archiveSession = useSessionStore(s => s.archiveSession)
   const updateSessionTitle = useSessionStore(s => s.updateSessionTitle)
   const loadMoreSessions = useSessionStore(s => s.loadMoreSessions)
+  const cronSessionIds = useCronStore(s => s.cronSessionIds)
+  const showCronSessions = useCronStore(s => s.showCronSessions)
 
   // Rename state
   const [renamingSessionId, setRenamingSessionId] = React.useState<string | null>(null)
 
-  // UI-level pagination: only render the first visibleSessionCount sessions
+  // UI-level pagination: filter by cron toggle, then slice to visible count
   const sessions = React.useMemo(
-    () => allSessions.slice(0, visibleSessionCount),
-    [allSessions, visibleSessionCount],
+    () => allSessions
+      .filter(s => showCronSessions
+        ? cronSessionIds.has(s.id)
+        : !cronSessionIds.has(s.id) || s.id === activeSessionId
+      )
+      .slice(0, visibleSessionCount),
+    [allSessions, cronSessionIds, showCronSessions, activeSessionId, visibleSessionCount],
   )
   
   const openSettings = useUIStore(s => s.openSettings)
@@ -541,11 +570,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <div className="flex items-center justify-between">
           <Button
             variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-muted-foreground hover:text-foreground"
-            onClick={openSettings}
+            size="sm"
+            className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+            onClick={() => openSettings()}
           >
-            <Settings className="h-4 w-4" />
+            {t('sidebar.settings', '设置')}
           </Button>
           <WorkspaceSelectorButton />
         </div>

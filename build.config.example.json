@@ -25,8 +25,12 @@
       "feishu": true,
       "email": true,
       "kook": true,
-      "wecom": true
+      "wecom": true,
+      "wechat": true
     }
+  },
+  "oss": {
+    "fcEndpoint": "https://cloud.ucar.cc"
   },
   "defaults": {
     "locale": "zh-CN",

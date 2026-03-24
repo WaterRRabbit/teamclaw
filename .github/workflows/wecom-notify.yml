@@ -1,0 +1,81 @@
+name: WeCom Notification
+
+on:
+  pull_request:
+    types: [opened]
+  issues:
+    types: [opened]
+  release:
+    types: [published]
+  watch:
+    types: [started]
+  fork:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify on PR opened
+        if: github.event_name == 'pull_request'
+        run: |
+          curl -s -X POST \
+            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${{ secrets.WECOM_WEBHOOK_KEY }}" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "msgtype": "markdown",
+              "markdown": {
+                "content": "## 🔀 新的 Pull Request\n> **标题**: '"$(echo '${{ github.event.pull_request.title }}' | sed 's/"/\\"/g')"'\n> **作者**: ${{ github.event.pull_request.user.login }}\n> **分支**: `${{ github.event.pull_request.head.ref }}` → `${{ github.event.pull_request.base.ref }}`\n> **链接**: [查看 PR](${{ github.event.pull_request.html_url }})"
+              }
+            }'
+
+      - name: Notify on Issue opened
+        if: github.event_name == 'issues'
+        run: |
+          curl -s -X POST \
+            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${{ secrets.WECOM_WEBHOOK_KEY }}" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "msgtype": "markdown",
+              "markdown": {
+                "content": "## 🐛 新的 Issue\n> **标题**: '"$(echo '${{ github.event.issue.title }}' | sed 's/"/\\"/g')"'\n> **作者**: ${{ github.event.issue.user.login }}\n> **链接**: [查看 Issue](${{ github.event.issue.html_url }})"
+              }
+            }'
+
+      - name: Notify on Star
+        if: github.event_name == 'watch'
+        run: |
+          curl -s -X POST \
+            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${{ secrets.WECOM_WEBHOOK_KEY }}" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "msgtype": "markdown",
+              "markdown": {
+                "content": "## ⭐ 新的 Star\n> **用户**: [${{ github.actor }}](https://github.com/${{ github.actor }})\n> **仓库**: [${{ github.repository }}](https://github.com/${{ github.repository }})"
+              }
+            }'
+
+      - name: Notify on Fork
+        if: github.event_name == 'fork'
+        run: |
+          curl -s -X POST \
+            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${{ secrets.WECOM_WEBHOOK_KEY }}" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "msgtype": "markdown",
+              "markdown": {
+                "content": "## 🍴 仓库被 Fork\n> **用户**: [${{ github.actor }}](https://github.com/${{ github.actor }})\n> **Fork 仓库**: [${{ github.event.forkee.full_name }}](https://github.com/${{ github.event.forkee.full_name }})"
+              }
+            }'
+
+      - name: Notify on Release published
+        if: github.event_name == 'release'
+        run: |
+          curl -s -X POST \
+            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${{ secrets.WECOM_WEBHOOK_KEY }}" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "msgtype": "markdown",
+              "markdown": {
+                "content": "## 🚀 新版本发布\n> **版本**: ${{ github.event.release.tag_name }}\n> **名称**: '"$(echo '${{ github.event.release.name }}' | sed 's/"/\\"/g')"'\n> **作者**: ${{ github.event.release.author.login }}\n> **链接**: [查看 Release](${{ github.event.release.html_url }})"
+              }
+            }'

@@ -97,7 +97,15 @@
     "webMode": "Web Mode",
     "enterPath": "Enter workspace path",
     "clickToSelect": "Click to select a folder",
-    "selectFolder": "Select Folder"
+    "selectFolder": "Select Folder",
+    "typeDialog": {
+      "title": "How will you use this workspace?",
+      "subtitle": "You can change this anytime in settings",
+      "personal": "Personal",
+      "personalDesc": "Work independently, no sync needed",
+      "team": "Team",
+      "teamDesc": "Join a team, sync shared resources"
+    }
   },
   "fileExplorer": {
     "newFile": "New File",
@@ -141,7 +149,8 @@
     "noSessionsFound": "No sessions found",
     "currentWorkspace": "Current: {{path}}",
     "loadMore": "Load More",
-    "loadingMore": "Loading..."
+    "loadingMore": "Loading...",
+    "settings": "Settings"
   },
   "setup": {
     "title": "Setup Required",
@@ -1030,6 +1039,18 @@
         "inviteStep5": "Open the link in browser to add bot to server",
         "inviteAdminNote": "You need server admin permissions to invite bots.",
         "nextStepConfigure": "Configure server/channel settings if needed"
+      },
+      "wechat": {
+        "title": "WeChat",
+        "description": "Connect personal WeChat via ClawBot",
+        "wizardIntroTitle": "Welcome to WeChat Setup",
+        "wizardIntroDesc": "Connect your personal WeChat to TeamClaw via ClawBot.",
+        "wizardScanTitle": "Scan QR Code",
+        "wizardScanDesc": "Use WeChat to scan the QR code.",
+        "wizardVerifyTitle": "Connection Verified",
+        "wizardVerifyDesc": "Your WeChat is connected.",
+        "wizardCompleteTitle": "Setup Complete",
+        "wizardCompleteDesc": "Your WeChat channel is ready."
       }
     },
     "cron": {
@@ -1099,7 +1120,11 @@
       "newJob": "New Job",
       "noJobs": "No scheduled jobs yet",
       "noJobsDesc": "Create your first automated task to have your AI agent perform actions on a schedule. For example, check your approval platform every 30 minutes.",
-      "createFirstJob": "Create Your First Job"
+      "createFirstJob": "Create Your First Job",
+      "useWorktree": "Run in isolated worktree",
+      "useWorktreeDesc": "Execute in a temporary git worktree copy",
+      "worktreeBranch": "Branch",
+      "worktreeBranchPlaceholder": "main"
     },
     "team": {
       "checkingWorkspace": "Checking workspace...",

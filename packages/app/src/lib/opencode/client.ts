@@ -9,6 +9,7 @@ import type {
   Project,
   Command,
   MCPStatusMap,
+  MCPServerConfig,
 } from './types'
 
 // Re-export Command type for convenience
@@ -73,7 +74,7 @@ export class OpenCodeClient {
         headers: this.getHeaders(),
         body: body ? JSON.stringify(body) : undefined,
       })
-    } catch (error) {
+    } catch {
       throw new Error(`Cannot connect to OpenCode server (${this.baseUrl}). Please make sure OpenCode server is running.`)
     }
 
@@ -181,7 +182,39 @@ export class OpenCodeClient {
   }
 
   async abortSession(id: string): Promise<boolean> {
-    return this.request<boolean>('POST', `/session/${id}/abort`)
+    // Abort endpoint may return 200/202/204 with empty body in some OpenCode versions.
+    // Use a tolerant parser here instead of generic JSON-only request().
+    const url = this.buildUrl(`/session/${id}/abort`)
+    let response: Response
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: this.getHeaders(),
+      })
+    } catch {
+      throw new Error(`Cannot connect to OpenCode server (${this.baseUrl}). Please make sure OpenCode server is running.`)
+    }
+
+    if (!response.ok) {
+      const contentType = response.headers.get('content-type') || ''
+      if (contentType.includes('application/json')) {
+        try {
+          const data = await response.json()
+          if (data?.success === false && data?.error) {
+            const errorMessage = Array.isArray(data.error)
+              ? data.error.map((e: { message?: string }) => e.message).join(', ')
+              : String(data.error)
+            throw new Error(`OpenCode API Error: ${errorMessage}`)
+          }
+        } catch {
+          // Fall through to generic status error below.
+        }
+      }
+      throw new Error(`OpenCode API Error: ${response.status}`)
+    }
+
+    // 204/empty body is considered success for abort.
+    return true
   }
 
   // Message APIs
@@ -469,6 +502,18 @@ export class OpenCodeClient {
   // MCP APIs
   async getMCPStatus(): Promise<MCPStatusMap> {
     return this.request<MCPStatusMap>('GET', '/mcp')
+  }
+
+  async addMCPServer(name: string, config: MCPServerConfig): Promise<MCPStatusMap> {
+    return this.request<MCPStatusMap>('POST', '/mcp', { name, config })
+  }
+
+  async connectMCP(name: string): Promise<boolean> {
+    return this.request<boolean>('POST', `/mcp/${encodeURIComponent(name)}/connect`)
+  }
+
+  async disconnectMCP(name: string): Promise<boolean> {
+    return this.request<boolean>('POST', `/mcp/${encodeURIComponent(name)}/disconnect`)
   }
 
   async getToolIds(): Promise<string[]> {

@@ -29,6 +29,10 @@ vi.mock('@/lib/utils', () => ({
   cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
 }))
 
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async () => () => {}),
+}))
+
 vi.mock('@/lib/knowledge-utils', () => ({
   formatTimeAgo: (iso: string | undefined) => iso ? 'some time ago' : 'never',
 }))

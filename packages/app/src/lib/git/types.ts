@@ -98,6 +98,8 @@ export interface TeamMember {
   nodeId: string
   /** Human-readable display name (e.g. "Alice", "Bob") */
   name: string
+  /** Member role: owner, editor, or viewer */
+  role?: 'owner' | 'editor' | 'viewer'
   /** Human-readable label */
   label: string
   /** OS name */
@@ -220,4 +222,22 @@ export interface WebDavSyncResult {
   filesDeleted: number
 }
 
-export type TeamSyncMode = 'git' | 'p2p' | 'webdav' | null
+export type TeamSyncMode = 'git' | 'p2p' | 'webdav' | 'oss' | null
+
+// Unified team management types
+export interface TeamCreateResult {
+  teamId: string | null
+  ticket: string
+}
+
+export interface TeamJoinResult {
+  success: boolean
+  role: 'owner' | 'editor' | 'viewer'
+  members: TeamMember[]
+}
+
+export type TeamJoinErrorType =
+  | 'InvalidTicket'
+  | 'DeviceNotRegistered'
+  | 'AlreadyInTeam'
+  | 'SyncError'
