@@ -1,9 +1,10 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2 } from "lucide-react";
+import { AlertCircle, Loader2, RefreshCw, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn, isTauri } from "@/lib/utils";
 
+import { SKILLS_CHANGED_EVENT } from "@/hooks/useAppInit";
 import { useSessionStore } from "@/stores/session";
 import { useStreamingStore } from "@/stores/streaming";
 import { useVoiceInputStore } from "@/stores/voice-input";
@@ -16,6 +17,7 @@ import { TEAMCLAW_DIR, CONFIG_FILE_NAME, TEAM_REPO_DIR } from "@/lib/build-confi
 import type { PromptInputMessage } from "@/packages/ai/prompt-input";
 import type { SendMessageFilePart } from "@/lib/opencode/types";
 import { Suggestions, Suggestion } from "@/packages/ai/suggestion";
+import { Button } from "@/components/ui/button";
 
 import { ChatInputArea } from "./ChatInputArea";
 import { getFileName } from "./utils/fileUtils";
@@ -102,12 +104,15 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   // ── Workspace store ───────────────────────────────────────────────────
   const workspacePath = useWorkspaceStore(s => s.workspacePath);
   const openCodeReady = useWorkspaceStore(s => s.openCodeReady);
+  const setOpenCodeReady = useWorkspaceStore(s => s.setOpenCodeReady);
 
   // ── Local state ───────────────────────────────────────────────────────
   const inputValue = draftInput;
   const setInputValue = setDraftInput;
   const [attachedFiles, setAttachedFiles] = React.useState<string[]>([]);
   const [imageFiles, setImageFiles] = React.useState<File[]>([]);
+  const [hasSkillRestartPrompt, setHasSkillRestartPrompt] = React.useState(false);
+  const [isRestartingSkillsRuntime, setIsRestartingSkillsRuntime] = React.useState(false);
 
   const isImagePath = React.useCallback((path: string) => {
     return /\.(png|jpe?g|gif|webp|svg|bmp|ico|heic|heif)$/i.test(path);
@@ -227,6 +232,12 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
       if (debounceTimer) clearTimeout(debounceTimer);
     };
   }, [openCodeReady, workspacePath]);
+
+  React.useEffect(() => {
+    const onSkillsChanged = () => setHasSkillRestartPrompt(true);
+    window.addEventListener(SKILLS_CHANGED_EVENT, onSkillsChanged);
+    return () => window.removeEventListener(SKILLS_CHANGED_EVENT, onSkillsChanged);
+  }, []);
 
   // ── Team shortcuts hot reload via file watcher ─────────────────────────
   React.useEffect(() => {
@@ -519,6 +530,29 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     [setInputValue],
   );
 
+  const handleRestartSkillsRuntime = React.useCallback(async () => {
+    if (!workspacePath) return;
+    setIsRestartingSkillsRuntime(true);
+    setOpenCodeReady(false);
+    try {
+      await invoke("stop_opencode");
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const status = await invoke<{ url: string }>("start_opencode", {
+        config: { workspace_path: workspacePath },
+      });
+      const { initOpenCodeClient } = await import("@/lib/opencode/client");
+      initOpenCodeClient({ baseUrl: status.url, workspacePath });
+      setOpenCodeReady(true, status.url);
+      setHasSkillRestartPrompt(false);
+    } catch (error) {
+      console.error("[ChatPanel] Failed to restart OpenCode for skills:", error);
+      setOpenCodeReady(true);
+      setError(error instanceof Error ? error.message : "Failed to restart OpenCode");
+    } finally {
+      setIsRestartingSkillsRuntime(false);
+    }
+  }, [workspacePath, setOpenCodeReady, setError]);
+
   // ── Empty state with suggestions ──────────────────────────────────────
   const emptyState = React.useMemo(() => (
     <div
@@ -573,6 +607,44 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
         <div className="absolute top-2 right-2 z-20 flex items-center gap-2 rounded-full bg-yellow-100 px-3 py-1 text-xs text-yellow-800">
           <Loader2 className="h-3 w-3 animate-spin" />
           {t("chat.connecting", "Connecting...")}
+        </div>
+      )}
+
+      {hasSkillRestartPrompt && (
+        <div className="absolute top-2 left-1/2 z-20 flex w-[min(92vw,640px)] -translate-x-1/2 items-center gap-3 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 shadow-sm">
+          <AlertCircle className="h-4 w-4 shrink-0 text-sky-600" />
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">{t("chat.skillRestartTitle", "Detected new skills")}</p>
+            <p className="text-xs text-sky-700">
+              {t("chat.skillRestartBody", "New or updated skills were detected. Restart OpenCode now to load them in the current runtime.")}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => void handleRestartSkillsRuntime()}
+            disabled={isRestartingSkillsRuntime}
+            className="gap-2"
+          >
+            {isRestartingSkillsRuntime ? (
+              <>
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {t("settings.mcp.restarting", "Restarting...")}
+              </>
+            ) : (
+              <>
+                <RefreshCw className="h-3 w-3" />
+                {t("settings.mcp.restart", "Restart")}
+              </>
+            )}
+          </Button>
+          <button
+            type="button"
+            onClick={() => setHasSkillRestartPrompt(false)}
+            className="rounded p-1 text-sky-700 hover:bg-sky-100"
+            aria-label={t("common.close", "Close")}
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
 
