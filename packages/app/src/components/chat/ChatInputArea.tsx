@@ -38,6 +38,7 @@ import { ContextUsageBadge } from "./ContextUsageBadge";
 import { type QueuedMessage, useSessionStore } from "@/stores/session";
 import { useVoiceInputStore } from "@/stores/voice-input";
 import { useWorkspaceStore } from "@/stores/workspace";
+import { useUIStore } from "@/stores/ui";
 import { getFileName, getFileDisplayPath } from "./utils/fileUtils";
 import { LocalImage } from "@/packages/ai/message";
 
@@ -155,6 +156,8 @@ export function ChatInputArea({
   // Team mode
   const teamMode = useTeamModeStore(s => s.teamMode);
   const devUnlocked = useTeamModeStore(s => s.devUnlocked);
+  const advancedMode = useUIStore((s) => s.advancedMode);
+  const canShowPlanToggle = advancedMode && devUnlocked;
 
   // Model selector
   const [modelSelectorOpen, setModelSelectorOpen] = React.useState(false);
@@ -408,21 +411,23 @@ export function ChatInputArea({
                 <FileInputButton onFilesSelected={onFilesChange} />
               </div>
 
-              {/* Plan mode toggle */}
-              <Button
-                type="button"
-                variant={isPlanMode ? "default" : "ghost"}
-                size="sm"
-                className={cn(
-                  "h-8 px-2 text-xs",
-                  isPlanMode
-                    ? "bg-[#F5A623] text-black hover:bg-[#E09500]"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-                onClick={() => setIsPlanMode(!isPlanMode)}
-              >
-                Plan
-              </Button>
+              {/* Plan mode toggle (Advanced Mode + Dev Mode only) */}
+              {canShowPlanToggle && (
+                <Button
+                  type="button"
+                  variant={isPlanMode ? "default" : "ghost"}
+                  size="sm"
+                  className={cn(
+                    "h-8 px-2 text-xs",
+                    isPlanMode
+                      ? "bg-[#F5A623] text-black hover:bg-[#E09500]"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => setIsPlanMode(!isPlanMode)}
+                >
+                  Plan
+                </Button>
+              )}
 
               {(!teamMode || devUnlocked) && (
                 <ModelSelector
