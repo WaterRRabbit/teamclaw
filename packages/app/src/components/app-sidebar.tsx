@@ -1,6 +1,6 @@
 import * as React from "react"
 import { useTranslation } from "react-i18next"
-import { Search, SquarePen, MessageSquare, Loader2, Archive, PanelLeftIcon, FolderOpen, Users, Cloud, Pencil, Ellipsis, Clock, Sparkles, Bookmark } from "lucide-react"
+import { Search, SquarePen, MessageSquare, Loader2, Archive, PanelLeftIcon, FolderOpen, Users, Cloud, Pencil, Ellipsis, Clock, Sparkles, Bookmark, Settings } from "lucide-react"
 import { isWorkspaceUIVariant } from "@/lib/ui-variant"
 
 import { useSessionStore } from "@/stores/session"
@@ -590,8 +590,8 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   }
 
   return (
-    <Sidebar variant="floating" {...props}>
-      <div className="flex h-full flex-col rounded-lg" data-onboarding-id="main-sidebar">
+    <Sidebar variant="sidebar" {...props}>
+      <div className="flex h-full flex-col" data-onboarding-id="main-sidebar">
         {/* Header: custom traffic lights (Tauri) or spacer + icon group */}
         <SidebarHeader 
           className="flex-row items-center px-2 pt-1 pb-2"
@@ -805,9 +805,10 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             <Button
               variant="ghost"
               size="sm"
-              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground gap-1.5"
               onClick={() => openSettings()}
             >
+              <Settings className="h-3.5 w-3.5 shrink-0" />
               {t('sidebar.settings', '设置')}
             </Button>
             <WorkspaceSelectorButton />
