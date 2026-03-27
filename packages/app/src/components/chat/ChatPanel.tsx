@@ -109,6 +109,50 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   const [attachedFiles, setAttachedFiles] = React.useState<string[]>([]);
   const [imageFiles, setImageFiles] = React.useState<File[]>([]);
 
+  const isImagePath = React.useCallback((path: string) => {
+    return /\.(png|jpe?g|gif|webp|svg|bmp|ico|heic|heif)$/i.test(path);
+  }, []);
+
+  const extractImageAttachmentTokens = React.useCallback(
+    (text: string): { cleaned: string; imagePaths: string[] } => {
+      // Support tolerant attachment token parsing from pasted text.
+      // Examples:
+      // [Attachment: a.png] (path: /x/a.png)
+      // [Attachment:a.png](path:/x/a.png)
+      const attachmentPattern = /\[Attachment:\s*([^\]]+)\]\s*\(([^)]*)\)/gi;
+      const imagePaths: string[] = [];
+
+      let cleaned = text.replace(attachmentPattern, (full, _name, info) => {
+        const pathMatch = String(info).match(/path:\s*([^,)]+)/i);
+        const fullPath = pathMatch ? pathMatch[1].trim() : "";
+        if (fullPath && isImagePath(fullPath)) {
+          imagePaths.push(fullPath);
+          return "";
+        }
+        return full;
+      });
+
+      // Extra defensive pass: line-wise removal for any remaining textual
+      // attachment tokens that point to image paths.
+      const filteredLines = cleaned.split("\n").filter((line) => {
+        if (!line.includes("[Attachment:")) return true;
+        const pathMatch = line.match(/path:\s*([^)]+)\)?/i);
+        const maybePath = pathMatch ? pathMatch[1].trim() : "";
+        if (maybePath && isImagePath(maybePath)) return false;
+        return true;
+      });
+
+      cleaned = filteredLines.join("\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .replace(/[ \t]+\n/g, "\n")
+        .replace(/ {2,}/g, " ")
+        .trimStart();
+
+      return { cleaned, imagePaths };
+    },
+    [isImagePath],
+  );
+
   // ── Provider store ────────────────────────────────────────────────────
   const currentModelKey = useProviderStore(s => s.currentModelKey);
   const initProviderStore = useProviderStore(s => s.initAll);
@@ -326,6 +370,40 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     setAttachedFiles((prev) => [...prev, ...paths]);
   };
 
+  const handleInputChange = React.useCallback(
+    (nextValue: string) => {
+      const { cleaned, imagePaths } = extractImageAttachmentTokens(nextValue);
+      if (imagePaths.length > 0) {
+        setAttachedFiles((prev) => {
+          const seen = new Set(prev);
+          const uniqueNew = imagePaths.filter((p) => !seen.has(p));
+          return uniqueNew.length > 0 ? [...prev, ...uniqueNew] : prev;
+        });
+      }
+      setInputValue(cleaned);
+    },
+    [extractImageAttachmentTokens, setInputValue],
+  );
+
+  // Fallback sanitizer: if input text is injected through another path,
+  // still normalize it and convert image attachment tokens into previews.
+  React.useEffect(() => {
+    if (!inputValue) return;
+    const { cleaned, imagePaths } = extractImageAttachmentTokens(inputValue);
+
+    if (imagePaths.length > 0) {
+      setAttachedFiles((prev) => {
+        const seen = new Set(prev);
+        const uniqueNew = imagePaths.filter((p) => !seen.has(p));
+        return uniqueNew.length > 0 ? [...prev, ...uniqueNew] : prev;
+      });
+    }
+
+    if (cleaned !== inputValue) {
+      setInputValue(cleaned);
+    }
+  }, [inputValue, extractImageAttachmentTokens, setInputValue]);
+
   const removeFile = (index: number) => {
     setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
   };
@@ -521,7 +599,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
       <ChatInputArea
         compact={compact}
         inputValue={inputValue}
-        onInputChange={setInputValue}
+        onInputChange={handleInputChange}
         attachedFiles={attachedFiles}
             onFilesChange={handleFilesChange}
         onRemoveFile={removeFile}
