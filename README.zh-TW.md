@@ -1,10 +1,8 @@
 # TeamClaw
 
-AI Agent 桌面平台
+基於 OpenCode 打造的本地智慧體，數位員工的基座
 
 [English](README.md) | [简体中文](README.zh-CN.md) | 繁體中文 | [日本語](README.ja.md) | [한국어](README.ko.md)
-
-![TeamClaw 截圖](_assets/screenshot.jpg)
 
 ## 功能特性
 
@@ -13,7 +11,20 @@ AI Agent 桌面平台
 - **MCP 支援** — Model Context Protocol，連接企業系統
 - **Skills / 外掛擴充** — 可擴充的技能系統
 - **本地檔案操作** — 帶權限管理的檔案讀寫
-- **團隊 Git 同步** — 共享 Skills、MCP 設定與知識庫
+
+## 介面截圖
+
+### 首頁
+
+![TeamClaw 首頁](images/home.png)
+
+### 頻道
+
+![TeamClaw 頻道](images/channel.png)
+
+### 團隊
+
+![TeamClaw 團隊](images/team.png)
 
 ## 技術棧
 

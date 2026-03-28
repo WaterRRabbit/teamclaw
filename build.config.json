@@ -15,7 +15,7 @@
   },
   "features": {
     "advancedMode": true,
-    "teamMode": true,
+    "teamMode": false,
     "updater": true,
     "channels": {
       "discord": true,

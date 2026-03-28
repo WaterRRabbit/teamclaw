@@ -1,19 +1,34 @@
 # TeamClaw
 
-AI Agent 桌面平台
+基于OpenCode打造的本地智能体，数字员工的基座
 
 [English](README.md) | 简体中文 | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
-
-![TeamClaw 截图](_assets/screenshot.jpg)
 
 ## 功能特性
 
 - **三栏布局** — 侧边栏、聊天区、详情面板
 - **OpenCode 集成** — 完整的 Agent 能力支持
+- **渠道网关** — 支持 Discord、Feishu、Email、Kook、WeCom、WeChat
+- **自动化任务** — 支持定时任务（Cron）
+- **团队协作模式** — 支持 P2P 与 S3/OSS
 - **MCP 支持** — Model Context Protocol，连接企业系统
 - **Skills / 插件扩展** — 可扩展的技能系统
+- **知识库能力** — knowledge 文档索引与检索
 - **本地文件操作** — 带权限管理的文件读写
-- **团队 Git 同步** — 共享 Skills、MCP 配置和知识库
+
+## 界面截图
+
+### 主页
+
+![TeamClaw 主页](images/home.png)
+
+### 频道
+
+![TeamClaw 频道](images/channel.png)
+
+### 团队
+
+![TeamClaw 团队](images/team.png)
 
 ## 技术栈
 
@@ -49,7 +64,6 @@ xattr -cr /Applications/TeamClaw.app
 - pnpm >= 10
 - Rust >= 1.70
 - OpenCode CLI
-- gog CLI（可选，用于 Google Workspace 集成）
 
 ### 安装 OpenCode CLI
 
@@ -59,20 +73,6 @@ curl -fsSL https://opencode.ai/install | bash
 
 # 或者通过 npm 安装
 npm install -g opencode
-```
-
-### 安装 gog CLI（可选）
-
-[gog](https://gogcli.sh) 提供 Gmail、日历、云端硬盘、通讯录、Sheets 和 Docs 的命令行访问。
-
-```bash
-brew install steipete/tap/gogcli
-```
-
-首次设置 OAuth：
-```bash
-gog auth credentials /path/to/client_secret.json
-gog auth add you@gmail.com --services gmail,calendar,drive,contacts,sheets,docs
 ```
 
 ### 快速开始
@@ -109,7 +109,10 @@ pnpm update-opencode
 
 ## 团队协作
 
-TeamClaw 支持通过 Git 仓库实现团队协作，团队成员可以共享 Skills、MCP 配置和知识库。
+TeamClaw 支持多种团队协作方式：
+
+- **P2P 模式**：基于票据加入局域网团队，支持成员角色管理
+- **S3/OSS 模式**：基于对象存储的团队同步
 
 ### 配置团队共享仓库
 
@@ -125,7 +128,7 @@ TeamClaw 支持通过 Git 仓库实现团队协作，团队成员可以共享 Sk
 
 团队仓库会自动同步以下内容：
 
-- **Skills**：`.agent/skills/` — 共享的 Agent 技能
+- **Skills**：`skills/` — 共享的 Agent 技能
 - **MCP 配置**：`.mcp/` — MCP 服务器配置
 - **知识库**：`knowledge/` — 团队知识库文档
 

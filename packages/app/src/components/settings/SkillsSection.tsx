@@ -14,6 +14,7 @@ import {
   AlertCircle,
   Eye,
   Save,
+  Upload,
   Search,
   Shield,
   ShieldCheck,
@@ -25,6 +26,7 @@ import {
   Package,
 } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
+import { SKILLS_CHANGED_EVENT } from '@/hooks/useAppInit'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { initOpenCodeClient } from '@/lib/opencode/client'
 import { cn } from '@/lib/utils'
@@ -96,10 +98,13 @@ export const SkillsSection = React.memo(function SkillsSection() {
   const [searchQuery, setSearchQuery] = React.useState('')
   const [skillPermissions, setSkillPermissions] = React.useState<SkillPermissionMap>({})
   const [hasChanges, setHasChanges] = React.useState(false)
+  const [hasSkillRuntimeChanges, setHasSkillRuntimeChanges] = React.useState(false)
   const [isRestarting, setIsRestarting] = React.useState(false)
   const [restartError, setRestartError] = React.useState<string | null>(null)
   const [installLocation, setInstallLocation] = React.useState<'workspace' | 'global'>('workspace')
   const [isViewMode, setIsViewMode] = React.useState(false)
+  const [importZipPath, setImportZipPath] = React.useState<string | null>(null)
+  const [importZipLabel, setImportZipLabel] = React.useState<string | null>(null)
 
   const defaultPermission: SkillPermission = skillPermissions['*'] ?? 'allow'
 
@@ -192,8 +197,16 @@ export const SkillsSection = React.memo(function SkillsSection() {
 
   React.useEffect(() => {
     const onTeamSynced = () => loadSkills()
+    const onSkillsChanged = () => {
+      setHasSkillRuntimeChanges(true)
+      void loadSkills()
+    }
     window.addEventListener(TEAM_SYNCED_EVENT, onTeamSynced)
-    return () => window.removeEventListener(TEAM_SYNCED_EVENT, onTeamSynced)
+    window.addEventListener(SKILLS_CHANGED_EVENT, onSkillsChanged)
+    return () => {
+      window.removeEventListener(TEAM_SYNCED_EVENT, onTeamSynced)
+      window.removeEventListener(SKILLS_CHANGED_EVENT, onSkillsChanged)
+    }
   }, [loadSkills])
 
   const restartOpenCodeInstance = React.useCallback(
@@ -215,6 +228,53 @@ export const SkillsSection = React.memo(function SkillsSection() {
   )
 
   // Skills file watching is disabled - users can manually refresh if needed
+
+  const pickImportZip = async () => {
+    setError(null)
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: 'ZIP', extensions: ['zip'] }],
+      })
+      const path = Array.isArray(selected) ? selected[0] : selected
+      if (!path || typeof path !== 'string') {
+        return
+      }
+      setImportZipPath(path)
+      const base = path.split(/[/\\]/).pop() ?? path
+      setImportZipLabel(base)
+    } catch (err) {
+      console.error('Failed to pick zip:', err)
+      setError(err instanceof Error ? err.message : 'Failed to pick file')
+    }
+  }
+
+  const importSkillFromZip = async () => {
+    if (!importZipPath) return
+    if (installLocation === 'workspace' && !workspacePath) return
+
+    setIsSaving(true)
+    setError(null)
+    try {
+      await invoke<string>('import_skill_from_zip', {
+        workspacePath: installLocation === 'global' ? null : workspacePath,
+        zipPath: importZipPath,
+        isGlobal: installLocation === 'global',
+      })
+      await loadSkills()
+      await restartOpenCodeInstance()
+      setDialogOpen(false)
+      setImportZipPath(null)
+      setImportZipLabel(null)
+      setInstallLocation('workspace')
+    } catch (err) {
+      console.error('Failed to import skill zip:', err)
+      setError(err instanceof Error ? err.message : 'Failed to import skill')
+    } finally {
+      setIsSaving(false)
+    }
+  }
 
   const saveSkill = async () => {
     if (!skillName.trim()) return
@@ -264,7 +324,7 @@ ${skillContent.trim()}`
       
       await writeTextFile(`${skillDir}/SKILL.md`, finalContent)
       await loadSkills()
-      await restartOpenCodeInstance()
+      setHasSkillRuntimeChanges(true)
       
       setDialogOpen(false)
       setEditingSkill(null)
@@ -294,7 +354,7 @@ ${skillContent.trim()}`
         await remove(`${baseDir}/${skillToDelete.filename}`, { recursive: true })
       }
       await loadSkills()
-      await restartOpenCodeInstance()
+      setHasSkillRuntimeChanges(true)
       setDeleteConfirmOpen(false)
       setSkillToDelete(null)
     } catch (err) {
@@ -321,6 +381,8 @@ ${skillContent.trim()}`
     setSkillContent('')
     setInstallLocation('workspace')
     setIsViewMode(false)
+    setImportZipPath(null)
+    setImportZipLabel(null)
     setDialogOpen(true)
   }
 
@@ -361,6 +423,7 @@ ${skillContent.trim()}`
     setRestartError(null)
     try {
       await restartOpenCodeInstance()
+      setHasSkillRuntimeChanges(false)
     } catch (err) {
       console.error('[SkillsSection] Failed to restart OpenCode:', err)
       setRestartError(err instanceof Error ? err.message : String(err))
@@ -433,7 +496,7 @@ ${skillContent.trim()}`
         <SkillsMarketplace
           onInstalled={async () => {
             await loadSkills()
-            await restartOpenCodeInstance()
+            setHasSkillRuntimeChanges(true)
           }}
         />
       )}
@@ -452,6 +515,45 @@ ${skillContent.trim()}`
               </p>
               <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">
                 {t('settings.skills.restartToApply', 'Restart OpenCode to apply the new skill permission configuration.')}
+              </p>
+              {restartError && (
+                <p className="text-sm text-red-600 dark:text-red-400 mt-2">
+                  {t('common.error', 'Error')}: {restartError}
+                </p>
+              )}
+            </div>
+            <Button
+              size="sm"
+              onClick={handleRestartOpenCode}
+              disabled={isRestarting || !workspacePath}
+              className="gap-2"
+            >
+              {isRestarting ? (
+                <>
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  {t('settings.mcp.restarting', 'Restarting...')}
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-3 w-3" />
+                  {t('settings.mcp.restart', 'Restart')}
+                </>
+              )}
+            </Button>
+          </div>
+        </SettingCard>
+      )}
+
+      {hasSkillRuntimeChanges && (
+        <SettingCard className="bg-gradient-to-br from-sky-50 to-cyan-50 dark:from-sky-950/30 dark:to-cyan-950/30 border-sky-200 dark:border-sky-800">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-sky-600 dark:text-sky-400 mt-0.5" />
+            <div className="flex-1">
+              <p className="font-medium text-sky-900 dark:text-sky-100">
+                {t('settings.skills.runtimeChanged', 'Detected Skill Changes')}
+              </p>
+              <p className="text-sm text-sky-700 dark:text-sky-300 mt-1">
+                {t('settings.skills.restartToLoadNewSkills', 'New or updated skills were detected. Restart OpenCode to load them in the current runtime.')}
               </p>
               {restartError && (
                 <p className="text-sm text-red-600 dark:text-red-400 mt-2">
@@ -794,31 +896,37 @@ ${skillContent.trim()}`
       </>}
 
       {/* Create/Edit Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={(open) => {
+          setDialogOpen(open)
+          if (!open) {
+            setImportZipPath(null)
+            setImportZipLabel(null)
+          }
+        }}
+      >
         <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
           <DialogHeader>
             <DialogTitle>
-              {isViewMode ? t('settings.skills.viewSkill', 'View Skill') : editingSkill ? t('settings.skills.edit', 'Edit Skill') : t('settings.skills.createNew', 'Create New Skill')}
+              {isViewMode
+                ? t('settings.skills.viewSkill', 'View Skill')
+                : editingSkill
+                  ? t('settings.skills.edit', 'Edit Skill')
+                  : t('settings.skills.importFromZip', 'Import Skill from ZIP')}
             </DialogTitle>
             <DialogDescription>
-              {isViewMode 
+              {isViewMode
                 ? t('settings.skills.viewDescription', 'Read-only view of skill content')
-                : t('settings.skills.dialogDescription', 'Skills are SKILL.md files with YAML frontmatter. Saved to .opencode/skills/<name>/SKILL.md (OpenCode format).')}
+                : editingSkill
+                  ? t('settings.skills.dialogDescription', 'Skills are SKILL.md files with YAML frontmatter. Saved to .opencode/skills/<name>/SKILL.md (OpenCode format).')
+                  : t('settings.skills.importZipDescription', 'Upload a .zip that contains exactly one SKILL.md. The entire skill folder is copied to your skills directory. Archives without SKILL.md are rejected.')}
             </DialogDescription>
           </DialogHeader>
           
           <div className="flex-1 space-y-4 overflow-y-auto py-4">
             {!isViewMode && (
               <>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">{t('settings.skills.name', 'Skill Name')}</label>
-                  <Input
-                    placeholder={t('settings.skills.namePlaceholder', 'e.g., Git Workflow Guide')}
-                    value={skillName}
-                    onChange={(e) => setSkillName(e.target.value)}
-                  />
-                </div>
-
                 <div className="space-y-2">
                   <label className="text-sm font-medium">{t('settings.skills.installLocation', 'Install Location')}</label>
                   <Select value={installLocation} onValueChange={(v) => setInstallLocation(v as 'workspace' | 'global')}>
@@ -845,16 +953,44 @@ ${skillContent.trim()}`
                     </SelectContent>
                   </Select>
                 </div>
-                
-                <div className="space-y-2 flex-1">
-                  <label className="text-sm font-medium">{t('settings.skills.content', 'Content (Markdown)')}</label>
-                  <textarea
-                    className="w-full min-h-[300px] rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-ring"
-                    placeholder="# My Skill&#10;&#10;Describe what this skill does and provide instructions for the AI..."
-                    value={skillContent}
-                    onChange={(e) => setSkillContent(e.target.value)}
-                  />
-                </div>
+
+                {!editingSkill ? (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">{t('settings.skills.skillArchive', 'Skill archive (.zip)')}</label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button type="button" variant="outline" size="sm" className="gap-2 shrink-0" onClick={pickImportZip}>
+                        <Upload className="h-4 w-4" />
+                        {t('settings.skills.chooseZip', 'Choose ZIP…')}
+                      </Button>
+                      <span className="text-sm text-muted-foreground truncate min-w-0 flex-1">
+                        {importZipLabel ?? t('settings.skills.noZipSelected', 'No file selected')}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {t('settings.skills.importZipHint', 'Folder name comes from the parent of SKILL.md, or from the zip file name if SKILL.md is at the archive root.')}
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">{t('settings.skills.name', 'Skill Name')}</label>
+                      <Input
+                        placeholder={t('settings.skills.namePlaceholder', 'e.g., Git Workflow Guide')}
+                        value={skillName}
+                        onChange={(e) => setSkillName(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2 flex-1">
+                      <label className="text-sm font-medium">{t('settings.skills.content', 'Content (Markdown)')}</label>
+                      <textarea
+                        className="w-full min-h-[300px] rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-ring"
+                        placeholder="# My Skill&#10;&#10;Describe what this skill does and provide instructions for the AI..."
+                        value={skillContent}
+                        onChange={(e) => setSkillContent(e.target.value)}
+                      />
+                    </div>
+                  </>
+                )}
               </>
             )}
 
@@ -908,16 +1044,29 @@ ${skillContent.trim()}`
               {isViewMode ? t('common.close', 'Close') : t('common.cancel', 'Cancel')}
             </Button>
             {!isViewMode && (
-              <Button onClick={saveSkill} disabled={!skillName.trim() || isSaving}>
+              <Button
+                onClick={editingSkill ? saveSkill : importSkillFromZip}
+                disabled={
+                  isSaving ||
+                  (editingSkill ? !skillName.trim() : !importZipPath)
+                }
+              >
                 {isSaving ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    {t('settings.mcp.saving', 'Saving...')}
+                    {editingSkill
+                      ? t('settings.mcp.saving', 'Saving...')
+                      : t('settings.skills.importing', 'Importing...')}
                   </>
-                ) : (
+                ) : editingSkill ? (
                   <>
                     <Save className="mr-2 h-4 w-4" />
                     {t('settings.skills.saveSkill', 'Save Skill')}
+                  </>
+                ) : (
+                  <>
+                    <Upload className="mr-2 h-4 w-4" />
+                    {t('settings.skills.importButton', 'Import')}
                   </>
                 )}
               </Button>

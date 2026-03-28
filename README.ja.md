@@ -1,10 +1,8 @@
 # TeamClaw
 
-AI Agent デスクトッププラットフォーム
+OpenCode を基盤としたローカル AI エージェント。デジタル従業員のための土台
 
 [English](README.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | 日本語 | [한국어](README.ko.md)
-
-![TeamClaw スクリーンショット](_assets/screenshot.jpg)
 
 ## 主な機能
 
@@ -13,7 +11,20 @@ AI Agent デスクトッププラットフォーム
 - **MCP サポート** — Model Context Protocol、エンタープライズシステム連携
 - **Skills / プラグイン拡張** — 拡張可能なスキルシステム
 - **ローカルファイル操作** — 権限管理付きのファイル読み書き
-- **チーム Git 同期** — Skills、MCP 設定、ナレッジベースの共有
+
+## UI スクリーンショット
+
+### ホーム
+
+![TeamClaw ホーム](images/home.png)
+
+### チャンネル
+
+![TeamClaw チャンネル](images/channel.png)
+
+### チーム
+
+![TeamClaw チーム](images/team.png)
 
 ## 技術スタック
 
