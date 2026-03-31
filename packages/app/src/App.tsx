@@ -19,13 +19,13 @@ import {
   ChevronLeft,
   X,
   Loader2,
-  Code,
   Bot,
   ChevronDown,
   Plus,
   Bookmark,
   RotateCw,
   MessageSquarePlus,
+  AppWindow,
 } from "lucide-react";
 // Spotlight window - lazy loaded for spotlight window label
 const SpotlightWindow = lazy(() =>
@@ -85,7 +85,7 @@ import { OnboardingTour, type OnboardingStep } from "@/components/onboarding";
 import { useSessionStore } from "@/stores/session";
 import { useUIStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
-import { useTabsStore, selectActiveTab } from "@/stores/tabs";
+import { useTabsStore, selectActiveTab, selectHasHiddenTabs } from "@/stores/tabs";
 import { TabBar } from "@/components/tab-bar/TabBar";
 import { TabContentRenderer } from "@/components/tab-bar/TabContentRenderer";
 import { WebViewToolbar } from "@/components/tab-bar/WebViewToolbar";
@@ -210,7 +210,7 @@ function HeaderPanelTab({
 }: {
   icon: typeof ListTodo;
   label: string;
-  count: number;
+  count?: number;
   isActive: boolean;
   onClick: () => void;
 }) {
@@ -225,7 +225,7 @@ function HeaderPanelTab({
     >
       <Icon className="h-4 w-4" />
       {isActive && <span>{label}</span>}
-      {count > 0 && (
+      {!!count && count > 0 && (
         <span
           className={`min-w-[1.25rem] h-5 px-1 rounded-full text-[10px] font-medium flex items-center justify-center ${
             isActive ? "bg-primary/20 text-primary" : "bg-muted-foreground/20"
@@ -362,33 +362,6 @@ function ResizeHandle({
   );
 }
 
-// Layout toggle button component
-function LayoutToggleButton() {
-  const { t } = useTranslation();
-  const { layoutMode, toggleLayoutMode } = useUIStore();
-  const isFileMode = layoutMode === "file";
-
-  // Detect OS for keyboard shortcut display
-  const isMac =
-    typeof navigator !== "undefined" &&
-    navigator.platform.toUpperCase().indexOf("MAC") >= 0;
-  const shortcutKey = isMac ? "⌘\\" : "Ctrl+\\";
-
-  return (
-    <button
-      className={`p-1.5 transition-colors rounded ${
-        isFileMode
-          ? "bg-primary/15 text-primary"
-          : "text-muted-foreground hover:text-foreground hover:bg-muted"
-      }`}
-      onClick={toggleLayoutMode}
-      title={`${isFileMode ? t("app.switchTaskMode", "Switch to Task Mode") : t("app.switchCodeSpace", "Switch to Code Space")} (${shortcutKey})`}
-    >
-      <Code className="h-4 w-4" />
-    </button>
-  );
-}
-
 /** Full-screen overlay shown when OpenCode server is starting/restarting.
  *  Uses `fixed` positioning to cover the entire viewport (sidebar + content),
  *  blocking all user interaction until the server is ready. */
@@ -451,18 +424,20 @@ function AppContent() {
   const isNewWorkspace = useWorkspaceStore((s) => s.isNewWorkspace);
   const setIsNewWorkspace = useWorkspaceStore((s) => s.setIsNewWorkspace);
   const { state, open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
-  /** Workspace UI: Shortcuts docks left of chat; other panel tabs use the right column. */
-  const shortcutsLeftDock =
-    isWorkspaceUIVariant() && isPanelOpen && activeTab === "shortcuts";
-  const showRightWorkspacePanel = isPanelOpen && !shortcutsLeftDock;
+  const hasActiveFileTab = !!useTabsStore(selectActiveTab);
+  const hasHiddenTabs = useTabsStore(selectHasHiddenTabs);
+  /** Shortcuts always dock left; Files dock left only in default variant (workspace uses the right panel for Files). */
+  const leftDockActive =
+    isPanelOpen && (activeTab === "shortcuts" || (!isWorkspaceUIVariant() && activeTab === "files"));
+  const showRightWorkspacePanel = isPanelOpen && !leftDockActive;
   const isCollapsed = state === "collapsed";
-  /** Native traffic lights sit over the left column; spare inset header when Shortcuts owns that strip. */
-  const hideInsetChromeForShortcutsDock =
-    shortcutsLeftDock && isWorkspaceUIVariant() && currentView !== "settings";
+  /** Native traffic lights sit over the left column; spare inset header when left dock owns that strip. */
+  const hideInsetChromeForLeftDock =
+    leftDockActive && currentView !== "settings";
   const collapsedInsetLeading = isCollapsed ? (
-    hideInsetChromeForShortcutsDock ? null : (
+    hideInsetChromeForLeftDock ? null : (
       <>
-        {(!shortcutsLeftDock || currentView === "settings") && <TrafficLights />}
+        {(!leftDockActive || currentView === "settings") && <TrafficLights />}
         {isWorkspaceUIVariant() ? (
           <>
             <SidebarCollapseToggle className="mr-0.5" />
@@ -546,32 +521,27 @@ function AppContent() {
   useFileTabSync();
   const { rightPanelWidth, handleRightPanelResize } = useResizablePanels();
 
-  /** When Shortcuts opens in workspace UI, hide the main sidebar first; restore prior expansion when it closes. */
-  const restoreSidebarAfterShortcutsRef = useRef<boolean | null>(null);
+  /** When left dock opens, hide the main sidebar; restore prior expansion when it closes. */
+  const restoreSidebarAfterLeftDockRef = useRef<boolean | null>(null);
   useEffect(() => {
-    if (!isWorkspaceUIVariant()) {
-      restoreSidebarAfterShortcutsRef.current = null;
-      return;
-    }
-    if (shortcutsLeftDock) {
-      if (restoreSidebarAfterShortcutsRef.current === null) {
-        // Remember whether to re-expand when Shortcuts closes; collapse only if needed.
-        restoreSidebarAfterShortcutsRef.current = sidebarOpen;
+    if (leftDockActive) {
+      if (restoreSidebarAfterLeftDockRef.current === null) {
+        restoreSidebarAfterLeftDockRef.current = sidebarOpen;
         if (sidebarOpen) {
           setSidebarOpen(false);
         }
       } else if (sidebarOpen) {
-        // User expanded the session sidebar while Shortcuts is open — exit Shortcuts.
+        // User re-opened sidebar while left dock is active — close the dock.
         closePanel();
       }
     } else {
-      const shouldExpand = restoreSidebarAfterShortcutsRef.current === true;
-      restoreSidebarAfterShortcutsRef.current = null;
+      const shouldExpand = restoreSidebarAfterLeftDockRef.current === true;
+      restoreSidebarAfterLeftDockRef.current = null;
       if (shouldExpand) {
         setSidebarOpen(true);
       }
     }
-  }, [shortcutsLeftDock, sidebarOpen, setSidebarOpen, closePanel]);
+  }, [leftDockActive, sidebarOpen, setSidebarOpen, closePanel]);
 
   // Full-screen loading overlay when OpenCode server is starting/restarting
   const showConnectingOverlay =
@@ -760,9 +730,6 @@ function AppContent() {
         >
           {needsTrafficLightSpacer && <TrafficLights />}
 
-          {/* Layout toggle - before TeamClaw */}
-          {advancedMode && <LayoutToggleButton />}
-
           <span className="text-sm font-medium">{buildConfig.app.name}</span>
           <Separator
             orientation="vertical"
@@ -932,49 +899,49 @@ function AppContent() {
       {showConnectingOverlay && <ConnectingOverlay />}
       <AppSidebar />
       <SidebarInset className="flex flex-row h-svh overflow-hidden relative">
-        {isWorkspaceUIVariant() && (
-          <div
-            className={cn(
-              "shrink-0 overflow-hidden border-border bg-background transition-[width,opacity,transform] duration-500 ease-out",
-              shortcutsLeftDock
-                ? "w-(--sidebar-width) translate-x-0 border-r opacity-100"
-                : "pointer-events-none w-0 -translate-x-4 border-r-0 opacity-0",
-            )}
-          >
-            <div className="flex h-full w-(--sidebar-width) flex-col overflow-hidden bg-background">
-              {shortcutsLeftDock && (
-                <>
-                  <div
-                    className="flex h-12 shrink-0 items-center gap-1 border-b border-border bg-background px-2"
-                    data-tauri-drag-region
+        <div
+          className={cn(
+            "shrink-0 overflow-hidden border-border bg-background transition-[width,opacity,transform] duration-500 ease-out",
+            leftDockActive
+              ? "w-(--sidebar-width) translate-x-0 border-r opacity-100"
+              : "pointer-events-none w-0 -translate-x-4 border-r-0 opacity-0",
+          )}
+        >
+          <div className="flex h-full w-(--sidebar-width) flex-col overflow-hidden bg-background">
+            {leftDockActive && (
+              <>
+                <div
+                  className="flex h-12 shrink-0 items-center gap-1 border-b border-border bg-background px-2"
+                  data-tauri-drag-region
+                >
+                  <TrafficLights />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0 rounded-lg"
+                    onClick={() => closePanel()}
+                    title={t("shortcuts.backToSidebar", "Back to sidebar")}
+                    aria-label={t(
+                      "shortcuts.backToSidebar",
+                      "Back to sidebar",
+                    )}
                   >
-                    <TrafficLights />
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 shrink-0 rounded-lg"
-                      onClick={() => closePanel()}
-                      title={t("shortcuts.backToSidebar", "Back to sidebar")}
-                      aria-label={t(
-                        "shortcuts.backToSidebar",
-                        "Back to sidebar",
-                      )}
-                    >
-                      <ChevronLeft className="h-4 w-4" />
-                    </Button>
-                    <span className="min-w-0 truncate text-sm font-medium">
-                      {t("navigation.shortcuts", "Shortcuts")}
-                    </span>
-                    <div className="min-w-0 flex-1" data-tauri-drag-region />
-                  </div>
-                  <div className="min-h-0 flex-1 overflow-hidden">
-                    <RightPanel todos={todos} diff={sessionDiff} />
-                  </div>
-                </>
-              )}
-            </div>
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <span className="min-w-0 truncate text-sm font-medium">
+                    {activeTab === "files"
+                      ? t("navigation.files", "Files")
+                      : t("navigation.shortcuts", "Shortcuts")}
+                  </span>
+                  <div className="min-w-0 flex-1" data-tauri-drag-region />
+                </div>
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <RightPanel todos={todos} diff={sessionDiff} />
+                </div>
+              </>
+            )}
           </div>
-        )}
+        </div>
         {/* Main column: header + main content */}
         <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
           {/* Header with breadcrumb - sticky */}
@@ -986,7 +953,6 @@ function AppContent() {
 
             {embeddedSettingsSection ? (
               <>
-                {advancedMode && <LayoutToggleButton />}
                 <Button
                   variant="ghost"
                   size="icon"
@@ -1004,10 +970,20 @@ function AppContent() {
               </>
             ) : (
               <>
-                {advancedMode && <LayoutToggleButton />}
-                <span className="min-w-0 truncate text-sm">
+                <button
+                  className={cn(
+                    "min-w-0 truncate text-sm text-left",
+                    hasActiveFileTab && "cursor-pointer hover:text-foreground/70 transition-colors"
+                  )}
+                  onClick={() => {
+                    if (hasActiveFileTab) {
+                      useTabsStore.getState().hideAll();
+                    }
+                  }}
+                  disabled={!hasActiveFileTab}
+                >
                   {activeSession?.title || t("chat.newChat", "New Chat")}
-                </span>
+                </button>
                 {activeSession && (
                   <button
                     onClick={async () => {
@@ -1029,16 +1005,28 @@ function AppContent() {
               </>
             )}
 
-            {/* Panel tabs - right side of header (Shortcuts lives in sidebar when workspace UI variant) */}
+            {/* Panel tabs - right side of header */}
             <div className="ml-auto flex shrink-0 items-center gap-0.5" data-onboarding-id="workspace-panel-tabs">
-              {!isWorkspaceUIVariant() && (
-                <HeaderPanelTab
-                  icon={Bookmark}
-                  label={t("navigation.shortcuts", "Shortcuts")}
-                  count={0}
-                  isActive={isPanelOpen && activeTab === "shortcuts"}
-                  onClick={() => isPanelOpen && activeTab === "shortcuts" ? closePanel() : openPanel("shortcuts")}
-                />
+              {(hasActiveFileTab || hasHiddenTabs) && (
+                <button
+                  className={cn(
+                    "rounded p-1 transition-colors hover:bg-muted hover:text-foreground",
+                    hasActiveFileTab ? "text-foreground" : "text-muted-foreground",
+                  )}
+                  onClick={() => {
+                    if (hasActiveFileTab) {
+                      useTabsStore.getState().hideAll();
+                    } else {
+                      useTabsStore.getState().restoreLastTab();
+                    }
+                  }}
+                  title={hasActiveFileTab
+                    ? t("navigation.hideTabs", "Hide files")
+                    : t("navigation.restoreTabs", "Show files")
+                  }
+                >
+                  <AppWindow className="h-4 w-4" />
+                </button>
               )}
               <HeaderPanelTab
                 icon={ListTodo}
@@ -1060,16 +1048,15 @@ function AppContent() {
                   onClick={() => isPanelOpen && activeTab === "diff" ? closePanel() : openPanel("diff")}
                 />
               )}
-              {advancedMode && (
+              {isWorkspaceUIVariant() && (
                 <HeaderPanelTab
                   icon={FolderTree}
                   label={t("navigation.files", "Files")}
-                  count={0}
                   isActive={isPanelOpen && activeTab === "files"}
                   onClick={() => isPanelOpen && activeTab === "files" ? closePanel() : openPanel("files")}
                 />
               )}
-              {isPanelOpen && (
+              {showRightWorkspacePanel && (
                 <button
                   className="ml-1 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                   onClick={closePanel}
@@ -1093,7 +1080,7 @@ function AppContent() {
           </div>
         </div>
 
-        {/* Right Panel - full height (Shortcuts use left dock in workspace UI) */}
+        {/* Right Panel - full height */}
         <div
           className={cn(
             "shrink-0 overflow-hidden border-l border-border bg-background transition-[width,opacity,transform] duration-500 ease-out",
