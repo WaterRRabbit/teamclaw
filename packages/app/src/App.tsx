@@ -1173,7 +1173,14 @@ function App() {
           >
             <AppContent />
           </SidebarProvider>
-          <Toaster position="bottom-right" richColors />
+          <Toaster
+            position="top-center"
+            offset={40}
+            toastOptions={{
+              className: '!bg-popover !text-popover-foreground !border-border !shadow-md !rounded-md !text-xs !py-2 !px-3 !min-h-0 !gap-1.5',
+              descriptionClassName: '!text-muted-foreground !text-[11px]',
+            }}
+          />
           <UpdateDialogContainer />
           <TelemetryConsentDialog
             open={showConsentDialog}

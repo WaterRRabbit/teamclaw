@@ -242,11 +242,34 @@ export function extractFilePath(args: Record<string, unknown> | undefined): stri
 
 const PATCH_ARG_KEYS = [
   "patch",
+  "patchText",
   "diff",
   "unifiedDiff",
   "unified_diff",
   "udiff",
 ] as const;
+
+/**
+ * Parse a patch that only contains file deletions (*** Delete File: xxx).
+ * Returns the list of deleted file paths, or null if the patch contains non-delete operations.
+ */
+export function parseDeleteOnlyPatch(patchText: string): string[] | null {
+  const lines = patchText.trim().split('\n').filter(l => l.trim());
+  const deleteFiles: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === '*** Begin Patch' || trimmed === '*** End Patch') continue;
+    const match = trimmed.match(/^\*\*\* Delete File:\s*(.+)$/);
+    if (match) {
+      deleteFiles.push(match[1].trim());
+    } else {
+      return null;
+    }
+  }
+
+  return deleteFiles.length > 0 ? deleteFiles : null;
+}
 
 /**
  * Extract raw patch / unified-diff text from apply_patch (and similar) tool arguments.

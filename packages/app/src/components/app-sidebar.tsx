@@ -637,7 +637,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 />
               ) : (
                 <>
-                  <span className="truncate text-left text-xs">
+                  <span className="truncate text-left text-l">
                     {session.title}
                   </span>
                   {isPinned && (
