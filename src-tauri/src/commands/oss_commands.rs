@@ -9,7 +9,7 @@ use crate::commands::TEAMCLAW_DIR;
 use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
-use tauri::State;
+use tauri::{Manager, State};
 use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
@@ -261,6 +261,23 @@ pub async fn oss_create_team(
     }
     start_poll_loop(&state).await;
 
+    // Init shared secrets for the new team
+    {
+        if let Some(shared_state) =
+            app_handle.try_state::<crate::commands::shared_secrets::SharedSecretsState>()
+        {
+            let team_dir_path =
+                std::path::Path::new(&workspace_path).join(super::TEAM_REPO_DIR);
+            if let Err(e) = crate::commands::shared_secrets::init_shared_secrets(
+                &shared_state,
+                &team_secret,
+                &team_dir_path,
+            ) {
+                warn!("[OSS] Failed to init shared secrets: {}", e);
+            }
+        }
+    }
+
     info!("OSS team created: {team_id}");
 
     // Fire-and-forget: register team + owner key in LiteLLM via FC (FC then calls LiteLLM).
@@ -459,6 +476,23 @@ pub async fn oss_join_team(
     }
     start_poll_loop(&state).await;
 
+    // Init shared secrets for the joined team
+    {
+        if let Some(shared_state) =
+            app_handle.try_state::<crate::commands::shared_secrets::SharedSecretsState>()
+        {
+            let team_dir_path =
+                std::path::Path::new(&workspace_path).join(super::TEAM_REPO_DIR);
+            if let Err(e) = crate::commands::shared_secrets::init_shared_secrets(
+                &shared_state,
+                &team_secret,
+                &team_dir_path,
+            ) {
+                warn!("[OSS] Failed to init shared secrets: {}", e);
+            }
+        }
+    }
+
     info!("Joined OSS team: {team_id}");
 
     // Fire-and-forget: create LiteLLM key for joining member via FC
@@ -580,6 +614,23 @@ pub async fn oss_restore_sync(
         *guard = Some(manager);
     }
     start_poll_loop(&state).await;
+
+    // Init shared secrets for the restored team
+    {
+        if let Some(shared_state) =
+            app_handle.try_state::<crate::commands::shared_secrets::SharedSecretsState>()
+        {
+            let team_dir_path =
+                std::path::Path::new(&workspace_path).join(super::TEAM_REPO_DIR);
+            if let Err(e) = crate::commands::shared_secrets::init_shared_secrets(
+                &shared_state,
+                &team_secret,
+                &team_dir_path,
+            ) {
+                warn!("[OSS] Failed to init shared secrets: {}", e);
+            }
+        }
+    }
 
     info!("Restored OSS sync for team: {team_id}");
 

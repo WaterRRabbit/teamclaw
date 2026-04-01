@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
@@ -37,6 +37,7 @@ pub struct OssSyncManager {
     skills_doc: loro::LoroDoc,
     mcp_doc: loro::LoroDoc,
     knowledge_doc: loro::LoroDoc,
+    secrets_doc: loro::LoroDoc,
 
     team_id: String,
     node_id: String,
@@ -129,6 +130,7 @@ impl OssSyncManager {
             skills_doc: loro::LoroDoc::new(),
             mcp_doc: loro::LoroDoc::new(),
             knowledge_doc: loro::LoroDoc::new(),
+            secrets_doc: loro::LoroDoc::new(),
             team_id,
             node_id,
             team_secret,
@@ -579,6 +581,7 @@ impl OssSyncManager {
             DocType::Skills => &self.skills_doc,
             DocType::Mcp => &self.mcp_doc,
             DocType::Knowledge => &self.knowledge_doc,
+            DocType::Secrets => &self.secrets_doc,
         }
     }
 
@@ -587,6 +590,7 @@ impl OssSyncManager {
             DocType::Skills => &mut self.skills_doc,
             DocType::Mcp => &mut self.mcp_doc,
             DocType::Knowledge => &mut self.knowledge_doc,
+            DocType::Secrets => &mut self.secrets_doc,
         }
     }
 
@@ -1100,6 +1104,19 @@ impl OssSyncManager {
                         }
                     }
                 }
+            }
+        }
+
+        // After writing Secrets files to disk, reload the in-memory secrets map
+        // and notify the frontend so that env-var resolution picks up the latest values.
+        if doc_type == DocType::Secrets {
+            if let Some(app_handle) = &self.app_handle {
+                if let Some(shared_state) = app_handle.try_state::<crate::commands::shared_secrets::SharedSecretsState>() {
+                    if let Err(e) = crate::commands::shared_secrets::load_all_secrets(&shared_state) {
+                        log::warn!("[OssSync] Failed to reload shared secrets: {}", e);
+                    }
+                }
+                let _ = app_handle.emit("secrets-changed", ());
             }
         }
 

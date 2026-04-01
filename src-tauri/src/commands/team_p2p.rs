@@ -1,6 +1,7 @@
 // P2P team sync via iroh-docs - bidirectional document-based file sharing
 
 use super::team_unified::{MemberRole, TeamManifest, TeamMember};
+use tauri::Manager;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -662,7 +663,7 @@ pub async fn join_team_drive(
     for attempt in 1..=10 {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-        file_count = write_doc_entries_to_disk(&doc, &node.store, team_dir)
+        file_count = write_doc_entries_to_disk(&doc, &node.store, team_dir, app_handle.as_ref())
             .await
             .unwrap_or(0);
 
@@ -749,6 +750,7 @@ pub async fn join_team_drive(
         is_owner,
         &joiner_role,
         &temp_engine,
+        app_handle.as_ref(),
     )
     .await
     {
@@ -808,6 +810,7 @@ async fn write_doc_entries_to_disk(
     doc: &iroh_docs::api::Doc,
     store: &FsStore,
     team_dir: &str,
+    app_handle: Option<&tauri::AppHandle>,
 ) -> Result<usize, String> {
     use futures_lite::StreamExt;
     use std::pin::pin;
@@ -824,6 +827,7 @@ async fn write_doc_entries_to_disk(
     std::fs::create_dir_all(team_path).map_err(|e| format!("Failed to create team dir: {}", e))?;
 
     let mut file_count = 0;
+    let mut secrets_changed = false;
     while let Some(entry_result) = entries.next().await {
         let entry = entry_result.map_err(|e| format!("Failed to read entry: {}", e))?;
         let key = String::from_utf8_lossy(entry.key()).to_string();
@@ -850,7 +854,21 @@ async fn write_doc_entries_to_disk(
         }
         std::fs::write(&file_path, &content)
             .map_err(|e| format!("Failed to write '{}': {}", key, e))?;
+        if key.starts_with("_secrets/") {
+            secrets_changed = true;
+        }
         file_count += 1;
+    }
+
+    if secrets_changed {
+        if let Some(app) = app_handle {
+            let shared_state = app.state::<crate::commands::shared_secrets::SharedSecretsState>();
+            if let Err(e) = crate::commands::shared_secrets::load_all_secrets(&shared_state) {
+                eprintln!("[P2P] Failed to reload shared secrets: {}", e);
+            }
+            use tauri::Emitter;
+            let _ = app.emit("secrets-changed", ());
+        }
     }
 
     Ok(file_count)
@@ -867,6 +885,7 @@ async fn reconcile_disk_and_doc(
     is_owner: bool,
     role: &MemberRole,
     engine: &Arc<Mutex<SyncEngine>>,
+    app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(usize, usize), String> {
     use futures_lite::StreamExt;
 
@@ -874,6 +893,7 @@ async fn reconcile_disk_and_doc(
     let team_path = Path::new(team_dir);
     let mut uploaded = 0usize;
     let mut downloaded = 0usize;
+    let mut secrets_changed = false;
 
     // 1. Collect local files
     let local_files = collect_files(team_path, team_path);
@@ -967,6 +987,9 @@ async fn reconcile_disk_and_doc(
                                     "[P2P][reconcile] Conflict -> remote wins (local stale): {}",
                                     key
                                 );
+                                if key.starts_with("_secrets/") {
+                                    secrets_changed = true;
+                                }
                                 downloaded += 1;
                             }
                         }
@@ -986,9 +1009,23 @@ async fn reconcile_disk_and_doc(
                 if let Err(e) = std::fs::write(&file_path, &content) {
                     eprintln!("[P2P][reconcile] Failed to write {}: {}", key, e);
                 } else {
+                    if key.starts_with("_secrets/") {
+                        secrets_changed = true;
+                    }
                     downloaded += 1;
                 }
             }
+        }
+    }
+
+    if secrets_changed {
+        if let Some(app) = app_handle {
+            let shared_state = app.state::<crate::commands::shared_secrets::SharedSecretsState>();
+            if let Err(e) = crate::commands::shared_secrets::load_all_secrets(&shared_state) {
+                eprintln!("[P2P] Failed to reload shared secrets: {}", e);
+            }
+            use tauri::Emitter;
+            let _ = app.emit("secrets-changed", ());
         }
     }
 
@@ -2122,6 +2159,16 @@ async fn doc_to_disk_watcher(
                         {
                             engine.lock().await.record_file_synced(key.clone(), mtime);
                         }
+                        if key.starts_with("_secrets/") {
+                            if let Some(ref app) = app_handle {
+                                let shared_state = app.state::<crate::commands::shared_secrets::SharedSecretsState>();
+                                if let Err(e) = crate::commands::shared_secrets::load_all_secrets(&shared_state) {
+                                    eprintln!("[P2P] Failed to reload shared secrets: {}", e);
+                                }
+                                use tauri::Emitter;
+                                let _ = app.emit("secrets-changed", ());
+                            }
+                        }
                     }
                 } else {
                     eprintln!("[P2P][doc→disk] Failed to get blob for: {}", key);
@@ -2238,6 +2285,16 @@ async fn doc_to_disk_watcher(
                         if let Ok(mtime) = std::fs::metadata(&file_path).and_then(|m| m.modified())
                         {
                             engine.lock().await.record_file_synced(key.clone(), mtime);
+                        }
+                        if key.starts_with("_secrets/") {
+                            if let Some(ref app) = app_handle {
+                                let shared_state = app.state::<crate::commands::shared_secrets::SharedSecretsState>();
+                                if let Err(e) = crate::commands::shared_secrets::load_all_secrets(&shared_state) {
+                                    eprintln!("[P2P] Failed to reload shared secrets: {}", e);
+                                }
+                                use tauri::Emitter;
+                                let _ = app.emit("secrets-changed", ());
+                            }
                         }
                     }
                 }
@@ -3206,6 +3263,9 @@ pub async fn p2p_create_team(
     let node = guard.as_mut().ok_or("P2P node not running")?;
 
     let team_dir = format!("{}/{}", workspace_path, super::TEAM_REPO_DIR);
+    // TODO: init_shared_secrets for P2P mode once a team_secret is established.
+    // P2P mode currently does not pass a team_secret through create_team/join_team_drive.
+    // When P2P gets a team_secret, add an init_shared_secrets call here.
     create_team(
         node,
         &team_dir,
@@ -3382,6 +3442,7 @@ async fn reconnect_team_for_workspace(
         is_owner,
         &my_role,
         &temp_engine,
+        app_handle.as_ref(),
     )
     .await
     {
