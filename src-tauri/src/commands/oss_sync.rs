@@ -4,6 +4,7 @@ use crate::commands::version_types::MAX_VERSIONS;
 use crate::commands::TEAMCLAW_DIR;
 
 use aws_sdk_s3::primitives::ByteStream;
+use futures::stream::{self, StreamExt};
 use chrono::Utc;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -17,6 +18,10 @@ use tracing::{info, warn};
 
 const KEYRING_SERVICE: &str = concat!(env!("APP_SHORT_NAME"), "-oss");
 const TOKEN_REFRESH_MARGIN_SECS: i64 = 300; // refresh 5 min before expiry
+/// Maximum file size (in bytes) that will be synced. Files larger than this
+/// are silently skipped during scan to prevent OOM and oversized S3 PUTs.
+/// 2 MB is generous for config/skill/knowledge text files.
+const MAX_SYNC_FILE_SIZE: u64 = 2 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // OssSyncManager
@@ -39,8 +44,18 @@ pub struct OssSyncManager {
     role: MemberRole,
     known_files: HashMap<DocType, HashSet<String>>,
 
+    /// Last processed S3 key per DocType, for start_after pruning
+    last_known_key: HashMap<DocType, String>,
+    /// Last exported Loro version vector bytes per DocType, for incremental export
+    last_exported_version: HashMap<DocType, Vec<u8>>,
+    /// Last local file scan time per DocType, for mtime-based incremental scanning
+    last_scan_time: HashMap<DocType, std::time::SystemTime>,
+    /// Last compaction time per DocType
+    last_compaction_at: HashMap<DocType, chrono::DateTime<Utc>>,
+    /// Signal flag keys already seen (to avoid re-triggering pulls)
+    known_signal_keys: HashSet<String>,
+
     poll_interval: Duration,
-    #[allow(dead_code)]
     workspace_path: String,
     team_dir: PathBuf,
     loro_cache_dir: PathBuf,
@@ -52,14 +67,16 @@ pub struct OssSyncManager {
 
 pub struct OssSyncState {
     pub manager: Arc<Mutex<Option<OssSyncManager>>>,
-    pub poll_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub fast_poll_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub slow_poll_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl Default for OssSyncState {
     fn default() -> Self {
         Self {
             manager: Arc::new(Mutex::new(None)),
-            poll_handle: Arc::new(Mutex::new(None)),
+            fast_poll_handle: Arc::new(Mutex::new(None)),
+            slow_poll_handle: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -87,6 +104,22 @@ impl OssSyncManager {
             known_files.insert(dt, HashSet::new());
         }
 
+        let cursor = read_sync_cursor(&workspace_path);
+
+        let mut last_known_key = HashMap::new();
+        let mut last_compaction_at_map = HashMap::new();
+        for dt in DocType::all() {
+            if let Some(key) = cursor.last_known_keys.get(dt.path()) {
+                last_known_key.insert(dt, key.clone());
+            }
+            if let Some(ts_str) = cursor.last_compaction_at.get(dt.path()) {
+                if let Ok(dt_parsed) = chrono::DateTime::parse_from_rfc3339(ts_str) {
+                    last_compaction_at_map.insert(dt, dt_parsed.with_timezone(&Utc));
+                }
+            }
+        }
+        let known_signal_keys: HashSet<String> = cursor.known_signal_keys.into_iter().collect();
+
         Self {
             s3_client: None,
             credentials: None,
@@ -101,6 +134,11 @@ impl OssSyncManager {
             team_secret,
             role: MemberRole::Editor,
             known_files,
+            last_known_key,
+            last_exported_version: HashMap::new(),
+            last_scan_time: HashMap::new(),
+            last_compaction_at: last_compaction_at_map,
+            known_signal_keys,
             poll_interval,
             workspace_path,
             team_dir,
@@ -146,6 +184,22 @@ impl OssSyncManager {
 
     pub fn set_last_sync_at(&mut self, ts: Option<String>) {
         self.last_sync_at = ts;
+    }
+
+    pub fn export_sync_cursor(&self) -> SyncCursor {
+        let mut last_known_keys = HashMap::new();
+        for (dt, key) in &self.last_known_key {
+            last_known_keys.insert(dt.path().to_string(), key.clone());
+        }
+        let mut last_compaction_at = HashMap::new();
+        for (dt, ts) in &self.last_compaction_at {
+            last_compaction_at.insert(dt.path().to_string(), ts.to_rfc3339());
+        }
+        SyncCursor {
+            last_known_keys,
+            known_signal_keys: self.known_signal_keys.iter().cloned().collect(),
+            last_compaction_at,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -365,6 +419,52 @@ impl OssSyncManager {
         Ok(keys)
     }
 
+    /// Like `s3_list`, but only returns keys lexicographically after `start_after`.
+    /// If `start_after` is None, behaves identically to `s3_list`.
+    async fn s3_list_after(
+        &self,
+        prefix: &str,
+        start_after: Option<&str>,
+    ) -> Result<Vec<String>, String> {
+        let client = self.client()?;
+        let bucket = self.bucket()?;
+
+        let mut keys: Vec<String> = Vec::new();
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let mut req = client.list_objects_v2().bucket(bucket).prefix(prefix);
+
+            if let Some(after) = start_after {
+                req = req.start_after(after);
+            }
+
+            if let Some(token) = &continuation_token {
+                req = req.continuation_token(token);
+            }
+
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| format!("S3 LIST {prefix} failed: {e}"))?;
+
+            for obj in resp.contents() {
+                if let Some(key) = obj.key() {
+                    keys.push(key.to_string());
+                }
+            }
+
+            if resp.is_truncated() == Some(true) {
+                continuation_token = resp.next_continuation_token().map(|s| s.to_string());
+            } else {
+                break;
+            }
+        }
+
+        keys.sort();
+        Ok(keys)
+    }
+
     pub async fn s3_delete(&self, key: &str) -> Result<(), String> {
         let client = self.client()?;
         let bucket = self.bucket()?;
@@ -378,6 +478,76 @@ impl OssSyncManager {
             .map_err(|e| format!("S3 DELETE {key} failed: {e}"))?;
 
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Signal Flag Operations
+    // -----------------------------------------------------------------------
+
+    /// Write a 0-byte signal flag to S3 to notify other nodes of changes.
+    pub async fn write_signal_flag(&self) -> Result<(), String> {
+        let timestamp_ms = Utc::now().timestamp_millis();
+        let key = format!(
+            "teams/{}/signal/{}/{}.flag",
+            self.team_id, self.node_id, timestamp_ms
+        );
+        self.s3_put(&key, &[]).await?;
+        info!("Wrote signal flag: {key}");
+        Ok(())
+    }
+
+    /// Check for new signal flags from other nodes.
+    /// Returns `true` if there are new flags (meaning remote changes exist).
+    async fn check_signal_flags(&mut self) -> Result<bool, String> {
+        let prefix = format!("teams/{}/signal/", self.team_id);
+        let all_flags = self.s3_list(&prefix).await?;
+
+        let mut has_new = false;
+        for flag in &all_flags {
+            let own_prefix = format!("teams/{}/signal/{}/", self.team_id, self.node_id);
+            if flag.starts_with(&own_prefix) {
+                continue;
+            }
+            if !self.known_signal_keys.contains(flag) {
+                has_new = true;
+                self.known_signal_keys.insert(flag.clone());
+            }
+        }
+
+        Ok(has_new)
+    }
+
+    /// Delete signal flags older than 1 hour, and prune matching entries
+    /// from `known_signal_keys` to prevent unbounded memory growth.
+    async fn cleanup_expired_signal_flags(&mut self) -> Result<u32, String> {
+        let prefix = format!("teams/{}/signal/", self.team_id);
+        let flags = self.s3_list(&prefix).await?;
+        let one_hour_ago_ms = Utc::now().timestamp_millis() - 3_600_000;
+
+        let mut deleted = 0u32;
+        for key in &flags {
+            if let Some(ts) = Self::extract_timestamp_from_flag_key(key) {
+                if ts < one_hour_ago_ms {
+                    self.s3_delete(key).await?;
+                    self.known_signal_keys.remove(key);
+                    deleted += 1;
+                }
+            }
+        }
+
+        if deleted > 0 {
+            info!("Cleaned up {deleted} expired signal flags");
+        }
+        Ok(deleted)
+    }
+
+    /// Extract timestamp_ms from a signal flag key.
+    /// Key format: `teams/{team_id}/signal/{node_id}/{timestamp_ms}.flag`
+    fn extract_timestamp_from_flag_key(key: &str) -> Option<i64> {
+        key.rsplit('/')
+            .next()
+            .and_then(|f| f.strip_suffix(".flag"))
+            .and_then(|s| s.parse().ok())
     }
 
     // -----------------------------------------------------------------------
@@ -502,12 +672,33 @@ impl OssSyncManager {
                 if path.is_dir() {
                     walk(base, &path, result)?;
                 } else {
+                    // Skip files exceeding the size limit
+                    if let Ok(meta) = path.metadata() {
+                        if meta.len() > MAX_SYNC_FILE_SIZE {
+                            tracing::warn!(
+                                "Skipping oversized file ({} bytes): {}",
+                                meta.len(),
+                                path.display()
+                            );
+                            continue;
+                        }
+                    }
                     let rel = path
                         .strip_prefix(base)
                         .map_err(|e| format!("Path strip error: {e}"))?;
                     let rel_str = rel.to_string_lossy().to_string();
                     let content = std::fs::read(&path)
                         .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+                    // Skip binary files — CRDT stores content as UTF-8 strings,
+                    // and from_utf8_lossy would corrupt binary data and cause
+                    // infinite re-upload (hash mismatch every cycle).
+                    if std::str::from_utf8(&content).is_err() {
+                        tracing::warn!(
+                            "Skipping non-UTF-8 file: {}",
+                            path.display()
+                        );
+                        continue;
+                    }
                     result.insert(rel_str, content);
                 }
             }
@@ -516,6 +707,195 @@ impl OssSyncManager {
 
         walk(dir, dir, &mut result)?;
         Ok(result)
+    }
+
+    /// Like `scan_local_files`, but only reads files whose mtime is newer than `since`.
+    /// Used by the fast loop for quick change detection.
+    fn scan_local_files_incremental(
+        dir: &Path,
+        since: std::time::SystemTime,
+    ) -> Result<HashMap<String, Vec<u8>>, String> {
+        let mut result = HashMap::new();
+
+        if !dir.exists() {
+            return Ok(result);
+        }
+
+        fn walk_incremental(
+            base: &Path,
+            current: &Path,
+            since: std::time::SystemTime,
+            result: &mut HashMap<String, Vec<u8>>,
+        ) -> Result<(), String> {
+            let entries = std::fs::read_dir(current)
+                .map_err(|e| format!("Failed to read dir {}: {e}", current.display()))?;
+
+            for entry in entries {
+                let entry = entry.map_err(|e| format!("Dir entry error: {e}"))?;
+                let path = entry.path();
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+
+                if name_str.starts_with('.') {
+                    continue;
+                }
+
+                if path.is_dir() {
+                    walk_incremental(base, &path, since, result)?;
+                } else {
+                    // Skip files exceeding the size limit
+                    let meta = path.metadata().ok();
+                    if let Some(ref m) = meta {
+                        if m.len() > MAX_SYNC_FILE_SIZE {
+                            tracing::warn!(
+                                "Skipping oversized file ({} bytes): {}",
+                                m.len(),
+                                path.display()
+                            );
+                            continue;
+                        }
+                    }
+
+                    let dominated = meta
+                        .and_then(|m| m.modified().ok())
+                        .map(|mtime| mtime > since)
+                        .unwrap_or(true);
+
+                    if dominated {
+                        let rel = path
+                            .strip_prefix(base)
+                            .map_err(|e| format!("Path strip error: {e}"))?;
+                        let rel_str = rel.to_string_lossy().to_string();
+                        let content = std::fs::read(&path)
+                            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+                        if std::str::from_utf8(&content).is_err() {
+                            tracing::warn!(
+                                "Skipping non-UTF-8 file: {}",
+                                path.display()
+                            );
+                            continue;
+                        }
+                        result.insert(rel_str, content);
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        walk_incremental(dir, dir, since, &mut result)?;
+        Ok(result)
+    }
+
+    /// Fast-path upload: only check files modified since last scan (mtime-based).
+    /// Returns `Ok(true)` if changes were uploaded.
+    ///
+    /// Only uploads changed/new files — does NOT detect deletions (that's the
+    /// slow_loop's job via full `upload_local_changes`). This avoids a redundant
+    /// full directory scan every 30 seconds.
+    pub async fn upload_local_changes_incremental(
+        &mut self,
+        doc_type: DocType,
+    ) -> Result<bool, String> {
+        let dir = self.team_dir.join(doc_type.dir_name());
+        let since = self
+            .last_scan_time
+            .get(&doc_type)
+            .copied()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+
+        let mtime_changed = Self::scan_local_files_incremental(&dir, since)?;
+
+        if mtime_changed.is_empty() {
+            return Ok(false);
+        }
+
+        // Filter to only truly changed files (hash differs from CRDT)
+        let changed = self.detect_local_changes(doc_type, &mtime_changed);
+        if changed.is_empty() {
+            // mtime changed but content didn't (e.g. touch, copy with same content)
+            self.last_scan_time
+                .insert(doc_type, std::time::SystemTime::now());
+            return Ok(false);
+        }
+
+        self.last_scan_time
+            .insert(doc_type, std::time::SystemTime::now());
+
+        // Update CRDT with only the changed files, then export and upload
+        let now = Utc::now().to_rfc3339();
+        let node_id = self.node_id.clone();
+        {
+            let doc = self.get_doc_mut(doc_type);
+            let files_map = doc.get_map("files");
+
+            for path in &changed {
+                if let Some(content) = mtime_changed.get(path) {
+                    Self::archive_current_version(&files_map, path)?;
+
+                    let hash = Self::compute_hash(content);
+                    let content_str = String::from_utf8_lossy(content).to_string();
+
+                    let entry_map = files_map
+                        .get_or_create_container(path, loro::LoroMap::new())
+                        .map_err(|e| format!("Failed to get/create map entry for {path}: {e}"))?;
+                    entry_map.insert("content", content_str.as_str())
+                        .map_err(|e| format!("Failed to set content for {path}: {e}"))?;
+                    entry_map.insert("hash", hash.as_str())
+                        .map_err(|e| format!("Failed to set hash for {path}: {e}"))?;
+                    entry_map.insert("deleted", false)
+                        .map_err(|e| format!("Failed to set deleted for {path}: {e}"))?;
+                    entry_map.insert("updatedBy", node_id.as_str())
+                        .map_err(|e| format!("Failed to set updatedBy for {path}: {e}"))?;
+                    entry_map.insert("updatedAt", now.as_str())
+                        .map_err(|e| format!("Failed to set updatedAt for {path}: {e}"))?;
+                }
+            }
+        }
+
+        // Export and upload
+        let updates = {
+            let doc = self.get_doc(doc_type);
+            match self.last_exported_version.get(&doc_type) {
+                Some(vv_bytes) => {
+                    match loro::VersionVector::decode(vv_bytes) {
+                        Ok(vv) => doc
+                            .export(loro::ExportMode::updates(&vv))
+                            .unwrap_or_else(|_| {
+                                doc.export(loro::ExportMode::all_updates())
+                                    .unwrap_or_default()
+                            }),
+                        Err(_) => doc
+                            .export(loro::ExportMode::all_updates())
+                            .map_err(|e| format!("Failed to export updates for {:?}: {e}", doc_type))?,
+                    }
+                }
+                None => doc
+                    .export(loro::ExportMode::all_updates())
+                    .map_err(|e| format!("Failed to export updates for {:?}: {e}", doc_type))?,
+            }
+        };
+
+        let timestamp_ms = Utc::now().timestamp_millis();
+        let key = format!(
+            "teams/{}/{}/updates/{}/{}.bin",
+            self.team_id,
+            doc_type.path(),
+            self.node_id,
+            timestamp_ms
+        );
+
+        self.s3_put(&key, &updates).await?;
+        info!(
+            "Incremental upload: {} changes for {:?} ({} bytes)",
+            changed.len(),
+            doc_type,
+            updates.len()
+        );
+
+        let current_vv = self.get_doc(doc_type).oplog_vv().encode();
+        self.last_exported_version.insert(doc_type, current_vv);
+
+        Ok(true)
     }
 
     fn compute_hash(content: &[u8]) -> String {
@@ -634,7 +1014,9 @@ impl OssSyncManager {
         Ok(result)
     }
 
-    pub fn write_doc_to_disk(&self, doc_type: DocType) -> Result<(), String> {
+    /// Write LoroDoc state to disk and absorb any local-only files into the CRDT.
+    /// Returns `Ok(true)` if files were absorbed (caller should upload the changes).
+    pub fn write_doc_to_disk(&self, doc_type: DocType) -> Result<bool, String> {
         let doc = self.get_doc(doc_type);
         let dir = self.team_dir.join(doc_type.dir_name());
 
@@ -703,6 +1085,7 @@ impl OssSyncManager {
         // via Finder while the app was closed or between sync cycles).
         // This also catches files that the CRDT marks as deleted but
         // which exist locally — they are re-absorbed with deleted=false.
+        let mut absorbed = false;
         if dir.exists() {
             let disk_files = Self::scan_local_files(&dir)?;
             let now = Utc::now().to_rfc3339();
@@ -733,11 +1116,12 @@ impl OssSyncManager {
                         .map_err(|e| format!("Failed to set updatedAt for {path}: {e}"))?;
 
                     info!("Absorbed local-only file into LoroDoc: {path}");
+                    absorbed = true;
                 }
             }
         }
 
-        Ok(())
+        Ok(absorbed)
     }
 
     pub fn persist_local_snapshot(&self, doc_type: DocType) -> Result<(), String> {
@@ -783,7 +1167,7 @@ impl OssSyncManager {
     // Sync Operations
     // -----------------------------------------------------------------------
 
-    pub async fn upload_local_changes(&mut self, doc_type: DocType) -> Result<(), String> {
+    pub async fn upload_local_changes(&mut self, doc_type: DocType) -> Result<bool, String> {
         let dir = self.team_dir.join(doc_type.dir_name());
         let local_files = Self::scan_local_files(&dir)?;
         let changed = self.detect_local_changes(doc_type, &local_files);
@@ -811,7 +1195,7 @@ impl OssSyncManager {
             }
 
             if !has_deletions {
-                return Ok(());
+                return Ok(false);
             }
         }
 
@@ -884,13 +1268,32 @@ impl OssSyncManager {
             }
         }
 
-        // Export updates and upload
-        let doc = self.get_doc(doc_type);
-        // TODO: Verify ExportMode for incremental updates in loro v1.
-        // Using updates_till or all_updates — adjust API as needed.
-        let updates = doc
-            .export(loro::ExportMode::all_updates())
-            .map_err(|e| format!("Failed to export loro updates for {:?}: {e}", doc_type))?;
+        // Export updates and upload — use incremental export when a prior version vector exists
+        let updates = {
+            let doc = self.get_doc(doc_type);
+            match self.last_exported_version.get(&doc_type) {
+                Some(vv_bytes) => {
+                    match loro::VersionVector::decode(vv_bytes) {
+                        Ok(vv) => doc
+                            .export(loro::ExportMode::updates(&vv))
+                            .unwrap_or_else(|_| {
+                                doc.export(loro::ExportMode::all_updates())
+                                    .unwrap_or_default()
+                            }),
+                        Err(_) => doc
+                            .export(loro::ExportMode::all_updates())
+                            .map_err(|e| {
+                                format!("Failed to export loro updates for {:?}: {e}", doc_type)
+                            })?,
+                    }
+                }
+                None => doc
+                    .export(loro::ExportMode::all_updates())
+                    .map_err(|e| {
+                        format!("Failed to export loro updates for {:?}: {e}", doc_type)
+                    })?,
+            }
+        };
 
         let timestamp_ms = Utc::now().timestamp_millis();
         let key = format!(
@@ -909,19 +1312,57 @@ impl OssSyncManager {
             updates.len()
         );
 
-        Ok(())
+        // Record version vector for future incremental exports
+        let current_vv = self.get_doc(doc_type).oplog_vv().encode();
+        self.last_exported_version.insert(doc_type, current_vv);
+
+        Ok(true)
     }
 
     pub async fn pull_remote_changes(&mut self, doc_type: DocType) -> Result<(), String> {
         let prefix = format!("teams/{}/{}/updates/", self.team_id, doc_type.path());
-        let all_keys = self.s3_list(&prefix).await?;
+        let start_after = self.last_known_key.get(&doc_type).map(|s| s.as_str());
+        let new_keys = self.s3_list_after(&prefix, start_after).await?;
 
-        let known = self.known_files.get(&doc_type).cloned().unwrap_or_default();
+        // Race condition detection: if we had a cursor but got zero results,
+        // another node may have compacted (deleted all updates).
+        // Fall back to reloading from the latest snapshot.
+        if new_keys.is_empty() && self.last_known_key.contains_key(&doc_type) {
+            let snap_prefix = format!("teams/{}/{}/snapshot/", self.team_id, doc_type.path());
+            let snap_keys = self.s3_list(&snap_prefix).await?;
+            if let Some(latest_snap) = snap_keys.last() {
+                info!(
+                    "Compaction detected for {:?} — reloading from snapshot: {}",
+                    doc_type, latest_snap
+                );
+                let data = self.s3_get(latest_snap).await?;
+                let doc = self.get_doc_mut(doc_type);
+                doc.import(&data)
+                    .map_err(|e| format!("Failed to import snapshot after compaction: {e}"))?;
 
-        let new_keys: Vec<String> = all_keys
-            .into_iter()
-            .filter(|k| !known.contains(k))
-            .collect();
+                // Reset cursor and re-list updates (there may be new ones after the snapshot)
+                self.last_known_key.remove(&doc_type);
+                self.known_files.insert(doc_type, HashSet::new());
+
+                let fresh_keys = self.s3_list(&prefix).await?;
+                for key in &fresh_keys {
+                    let data = self.s3_get(key).await?;
+                    let doc = self.get_doc_mut(doc_type);
+                    doc.import(&data)
+                        .map_err(|e| format!("Failed to import update {key}: {e}"))?;
+                }
+
+                if let Some(last) = fresh_keys.last() {
+                    self.last_known_key.insert(doc_type, last.clone());
+                }
+                let known_set = self.known_files.entry(doc_type).or_default();
+                for key in &fresh_keys {
+                    known_set.insert(key.clone());
+                }
+
+                return Ok(());
+            }
+        }
 
         if new_keys.is_empty() {
             return Ok(());
@@ -933,17 +1374,63 @@ impl OssSyncManager {
             doc_type
         );
 
-        for key in &new_keys {
-            let data = self.s3_get(key).await?;
-            let doc = self.get_doc_mut(doc_type);
-            doc.import(&data)
-                .map_err(|e| format!("Failed to import update {key}: {e}"))?;
+        // Download concurrently (up to 5 at a time)
+        if !new_keys.is_empty() {
+            let download_results: Vec<(String, Result<Vec<u8>, String>)> = stream::iter(
+                new_keys.iter().cloned(),
+            )
+            .map(|key| {
+                let client = self.client().cloned();
+                let bucket = self.bucket().map(|b| b.to_string());
+                async move {
+                    let result = match (client, bucket) {
+                        (Ok(c), Ok(b)) => {
+                            match c
+                                .get_object()
+                                .bucket(&b)
+                                .key(&key)
+                                .send()
+                                .await
+                            {
+                                Ok(resp) => resp
+                                    .body
+                                    .collect()
+                                    .await
+                                    .map(|d| d.into_bytes().to_vec())
+                                    .map_err(|e| format!("S3 GET {key} body read failed: {e}")),
+                                Err(e) => Err(format!("S3 GET {key} failed: {e}")),
+                            }
+                        }
+                        (Err(e), _) | (_, Err(e)) => Err(e),
+                    };
+                    (key, result)
+                }
+            })
+            .buffer_unordered(5)
+            .collect()
+            .await;
+
+            // Import in key order (keys are sorted by timestamp)
+            let mut sorted_results = download_results;
+            sorted_results.sort_by(|a, b| a.0.cmp(&b.0));
+
+            for (key, result) in sorted_results {
+                let data = result?;
+                let doc = self.get_doc_mut(doc_type);
+                doc.import(&data)
+                    .map_err(|e| format!("Failed to import update {key}: {e}"))?;
+            }
         }
 
-        // Add to known files
+        // Update cursor to the last processed key
+        if let Some(last) = new_keys.last() {
+            self.last_known_key.insert(doc_type, last.clone());
+        }
+
+        // Also maintain known_files for backward compat (get_sync_status uses it)
         let known_set = self.known_files.entry(doc_type).or_default();
-        for key in new_keys {
-            known_set.insert(key);
+        for key in &new_keys {
+            known_set.insert(key.clone());
         }
 
         // Write changes to disk
@@ -985,6 +1472,101 @@ impl OssSyncManager {
         }
 
         self.connected = true;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Compaction Operations
+    // -----------------------------------------------------------------------
+
+    /// Check if compaction is needed for a given DocType.
+    async fn should_compact(&self, doc_type: DocType) -> bool {
+        // Only Owner/Editor can compact
+        if self.role != MemberRole::Owner && self.role != MemberRole::Editor {
+            return false;
+        }
+
+        // Check time since last compaction
+        if let Some(last) = self.last_compaction_at.get(&doc_type) {
+            let elapsed = Utc::now().signed_duration_since(*last).num_seconds();
+            if elapsed < 3600 {
+                // Less than 1 hour — check file count threshold instead
+                let prefix = format!("teams/{}/{}/updates/", self.team_id, doc_type.path());
+                match self.s3_list(&prefix).await {
+                    Ok(keys) => keys.len() > 100,
+                    Err(_) => false,
+                }
+            } else {
+                true
+            }
+        } else {
+            true
+        }
+    }
+
+    /// Compact update files into a snapshot, then delete old updates.
+    async fn compact(&mut self, doc_type: DocType) -> Result<(), String> {
+        info!("Starting compaction for {:?}...", doc_type);
+
+        // 1. Pull all latest updates to ensure doc is current
+        self.pull_remote_changes(doc_type).await?;
+
+        // 2. Export full snapshot
+        let doc = self.get_doc(doc_type);
+        let snapshot = doc
+            .export(loro::ExportMode::Snapshot)
+            .map_err(|e| format!("Failed to export snapshot for {:?}: {e}", doc_type))?;
+
+        // 3. Upload new snapshot
+        let timestamp_ms = Utc::now().timestamp_millis();
+        let snap_key = format!(
+            "teams/{}/{}/snapshot/{}.bin",
+            self.team_id,
+            doc_type.path(),
+            timestamp_ms
+        );
+        self.s3_put(&snap_key, &snapshot).await?;
+        info!(
+            "Compaction: uploaded snapshot for {:?} ({} bytes)",
+            doc_type,
+            snapshot.len()
+        );
+
+        // 4. Delete all update files
+        let update_prefix = format!("teams/{}/{}/updates/", self.team_id, doc_type.path());
+        let update_keys = self.s3_list(&update_prefix).await?;
+        for key in &update_keys {
+            self.s3_delete(key).await?;
+        }
+        info!(
+            "Compaction: deleted {} update files for {:?}",
+            update_keys.len(),
+            doc_type
+        );
+
+        // 5. Trim old snapshots (keep only 2 most recent)
+        let snap_prefix = format!("teams/{}/{}/snapshot/", self.team_id, doc_type.path());
+        let snap_keys = self.s3_list(&snap_prefix).await?;
+        if snap_keys.len() > 2 {
+            for key in &snap_keys[..snap_keys.len() - 2] {
+                self.s3_delete(key).await?;
+            }
+            info!(
+                "Compaction: trimmed {} old snapshots for {:?}",
+                snap_keys.len() - 2,
+                doc_type
+            );
+        }
+
+        // 6. Reset local state
+        self.known_files.insert(doc_type, HashSet::new());
+        self.last_known_key.remove(&doc_type);
+        self.last_exported_version.remove(&doc_type);
+
+        // 7. Record compaction time
+        self.last_compaction_at.insert(doc_type, Utc::now());
+
+        info!("Compaction complete for {:?}", doc_type);
         Ok(())
     }
 
@@ -1199,10 +1781,139 @@ impl OssSyncManager {
     }
 
     // -----------------------------------------------------------------------
-    // Poll Loop
+    // Dual Poll Loops
     // -----------------------------------------------------------------------
 
-    pub async fn poll_loop(state: Arc<Mutex<Option<OssSyncManager>>>) {
+    /// Fast loop: runs every 30 seconds.
+    /// - Checks local file changes (mtime-based) → upload + signal flag
+    /// - Checks signal flags → pull remote changes
+    pub async fn fast_loop(state: Arc<Mutex<Option<OssSyncManager>>>) {
+        let base_interval = Duration::from_secs(30);
+        let max_interval = Duration::from_secs(300); // back off up to 5 min
+        let mut consecutive_failures: u32 = 0;
+
+        loop {
+            // Exponential backoff: 30s, 60s, 120s, 240s, 300s (capped)
+            let sleep_duration = if consecutive_failures == 0 {
+                base_interval
+            } else {
+                let backoff_secs = 30u64 * 2u64.pow(consecutive_failures.min(4));
+                Duration::from_secs(backoff_secs).min(max_interval)
+            };
+            tokio::time::sleep(sleep_duration).await;
+
+            // Use try_lock: if slow_loop holds the lock, skip this cycle
+            // rather than blocking. The slow_loop does a full sync anyway.
+            let mut guard = match state.try_lock() {
+                Ok(g) => g,
+                Err(_) => {
+                    info!("Fast loop skipped: slow loop is running");
+                    continue;
+                }
+            };
+            let manager = match guard.as_mut() {
+                Some(m) => m,
+                None => return,
+            };
+
+            let _ = manager.refresh_token_if_needed().await;
+
+            // Track whether any S3 call fails this cycle
+            let mut had_network_error = false;
+
+            // 1. Check local changes and upload (incremental scan)
+            let mut any_uploaded = false;
+            for doc_type in DocType::all() {
+                match manager.upload_local_changes_incremental(doc_type).await {
+                    Ok(true) => any_uploaded = true,
+                    Ok(false) => {}
+                    Err(e) => {
+                        warn!("OSS fast upload error for {:?}: {}", doc_type, e);
+                        had_network_error = true;
+                    }
+                }
+            }
+
+            // Write signal flag if we uploaded anything
+            if any_uploaded {
+                if let Err(e) = manager.write_signal_flag().await {
+                    warn!("Failed to write signal flag: {}", e);
+                    had_network_error = true;
+                }
+            }
+
+            // 2. Check for remote changes via signal flags
+            if !had_network_error {
+                match manager.check_signal_flags().await {
+                    Ok(true) => {
+                        // New signals found — pull remote changes
+                        let mut needs_upload = false;
+                        for doc_type in DocType::all() {
+                            if let Err(e) = manager.pull_remote_changes(doc_type).await {
+                                warn!("OSS fast pull error for {:?}: {}", doc_type, e);
+                                had_network_error = true;
+                            }
+                            match manager.write_doc_to_disk(doc_type) {
+                                Ok(true) => needs_upload = true, // absorbed local files
+                                Ok(false) => {}
+                                Err(e) => warn!("OSS fast write_doc_to_disk error for {:?}: {}", doc_type, e),
+                            }
+                        }
+
+                        // If write_doc_to_disk absorbed local-only files into the
+                        // CRDT, upload them so other nodes can see them.
+                        if needs_upload && !had_network_error {
+                            for doc_type in DocType::all() {
+                                if let Err(e) = manager.upload_local_changes(doc_type).await {
+                                    warn!("OSS fast absorb-upload error for {:?}: {}", doc_type, e);
+                                    had_network_error = true;
+                                }
+                            }
+                            if let Err(e) = manager.write_signal_flag().await {
+                                warn!("Failed to write signal flag after absorb: {}", e);
+                            }
+                        }
+
+                        // Emit status event (data changed)
+                        let now = Utc::now().to_rfc3339();
+                        manager.last_sync_at = Some(now);
+                        if let Some(handle) = &manager.app_handle {
+                            let status = manager.get_sync_status();
+                            let _ = handle.emit("oss-sync-status", &status);
+                        }
+                    }
+                    Ok(false) => {} // No new signals, skip
+                    Err(e) => {
+                        warn!("Failed to check signal flags: {}", e);
+                        had_network_error = true;
+                    }
+                }
+            }
+
+            // Update backoff state
+            if had_network_error {
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                if consecutive_failures == 1 {
+                    warn!("Fast loop: network error, will back off");
+                }
+            } else {
+                if consecutive_failures > 0 {
+                    info!("Fast loop: network recovered after {} failures", consecutive_failures);
+                }
+                consecutive_failures = 0;
+            }
+        }
+    }
+
+    /// Slow loop: runs every 5 minutes.
+    /// - Unconditional full pull (fallback consistency)
+    /// - Full local file scan
+    /// - Persist snapshots and cursor
+    /// - Compaction and signal cleanup
+    pub async fn slow_loop(state: Arc<Mutex<Option<OssSyncManager>>>) {
+        let max_interval = Duration::from_secs(3600); // back off up to 1 hour
+        let mut consecutive_failures: u32 = 0;
+
         loop {
             let interval = {
                 let mut guard = state.lock().await;
@@ -1210,17 +1921,38 @@ impl OssSyncManager {
                     manager.syncing = true;
                     let _ = manager.refresh_token_if_needed().await;
 
+                    let mut had_network_error = false;
+
+                    // 1. Full upload + pull for all DocTypes
+                    let mut needs_absorb_upload = false;
                     for doc_type in DocType::all() {
                         if let Err(e) = manager.upload_local_changes(doc_type).await {
-                            warn!("OSS upload error for {:?}: {}", doc_type, e);
+                            warn!("OSS slow upload error for {:?}: {}", doc_type, e);
+                            had_network_error = true;
                         }
                         if let Err(e) = manager.pull_remote_changes(doc_type).await {
-                            warn!("OSS pull error for {:?}: {}", doc_type, e);
+                            warn!("OSS slow pull error for {:?}: {}", doc_type, e);
+                            had_network_error = true;
+                        }
+                        match manager.write_doc_to_disk(doc_type) {
+                            Ok(true) => needs_absorb_upload = true,
+                            Ok(false) => {}
+                            Err(e) => warn!("OSS slow write_doc_to_disk error for {:?}: {}", doc_type, e),
                         }
                         let _ = manager.persist_local_snapshot(doc_type);
                     }
 
-                    // List pending applications for owners/editors
+                    // Upload absorbed local-only files so other nodes see them
+                    if needs_absorb_upload && !had_network_error {
+                        for doc_type in DocType::all() {
+                            if let Err(e) = manager.upload_local_changes(doc_type).await {
+                                warn!("OSS slow absorb-upload error for {:?}: {}", doc_type, e);
+                                had_network_error = true;
+                            }
+                        }
+                    }
+
+                    // 2. List pending applications for owners/editors
                     if manager.role() == MemberRole::Owner || manager.role() == MemberRole::Editor {
                         match manager.list_applications().await {
                             Ok(apps) => {
@@ -1234,6 +1966,28 @@ impl OssSyncManager {
                         }
                     }
 
+                    // 3. Persist sync cursor
+                    let cursor = manager.export_sync_cursor();
+                    if let Err(e) = write_sync_cursor(&manager.workspace_path, &cursor) {
+                        warn!("Failed to persist sync cursor: {}", e);
+                    }
+
+                    // 4. Compaction check (skip if network is down)
+                    if !had_network_error {
+                        for doc_type in DocType::all() {
+                            if manager.should_compact(doc_type).await {
+                                if let Err(e) = manager.compact(doc_type).await {
+                                    warn!("Compaction failed for {:?}: {}", doc_type, e);
+                                }
+                            }
+                        }
+
+                        // 5. Signal flag cleanup
+                        if let Err(e) = manager.cleanup_expired_signal_flags().await {
+                            warn!("Signal flag cleanup failed: {}", e);
+                        }
+                    }
+
                     manager.syncing = false;
                     let now = Utc::now().to_rfc3339();
                     manager.last_sync_at = Some(now);
@@ -1244,7 +1998,21 @@ impl OssSyncManager {
                         let _ = handle.emit("oss-sync-status", &status);
                     }
 
-                    manager.poll_interval
+                    // Backoff on network errors: 5m, 10m, 20m, 40m, 60m (capped)
+                    if had_network_error {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        if consecutive_failures == 1 {
+                            warn!("Slow loop: network error, will back off");
+                        }
+                        let backoff = manager.poll_interval * 2u32.pow(consecutive_failures.min(4));
+                        backoff.min(max_interval)
+                    } else {
+                        if consecutive_failures > 0 {
+                            info!("Slow loop: network recovered after {} failures", consecutive_failures);
+                        }
+                        consecutive_failures = 0;
+                        manager.poll_interval
+                    }
                 } else {
                     return;
                 }
@@ -1611,6 +2379,34 @@ pub fn write_oss_config(workspace_path: &str, config: &OssTeamConfig) -> Result<
     std::fs::write(&config_path, output)
         .map_err(|e| format!("Failed to write {}: {e}", super::CONFIG_FILE_NAME))?;
 
+    Ok(())
+}
+
+fn sync_cursor_path(workspace_path: &str) -> PathBuf {
+    Path::new(workspace_path)
+        .join(TEAMCLAW_DIR)
+        .join("loro")
+        .join("sync_cursor.json")
+}
+
+pub fn read_sync_cursor(workspace_path: &str) -> SyncCursor {
+    let path = sync_cursor_path(workspace_path);
+    match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => SyncCursor::default(),
+    }
+}
+
+pub fn write_sync_cursor(workspace_path: &str, cursor: &SyncCursor) -> Result<(), String> {
+    let path = sync_cursor_path(workspace_path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create cursor dir: {e}"))?;
+    }
+    let json = serde_json::to_string_pretty(cursor)
+        .map_err(|e| format!("Failed to serialize sync cursor: {e}"))?;
+    std::fs::write(&path, json)
+        .map_err(|e| format!("Failed to write sync cursor: {e}"))?;
     Ok(())
 }
 
