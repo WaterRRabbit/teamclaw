@@ -38,7 +38,7 @@ async fn get_p2p_node_id(iroh_state: &State<'_, IrohState>) -> Result<String, St
 }
 
 /// Generate or load a persistent fallback device ID.
-fn get_or_create_fallback_device_id() -> Result<String, String> {
+pub(crate) fn get_or_create_fallback_device_id() -> Result<String, String> {
     let dir = dirs::home_dir()
         .ok_or("Cannot determine home directory")?
         .join(".teamclaw");
