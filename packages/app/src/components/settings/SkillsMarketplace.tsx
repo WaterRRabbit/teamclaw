@@ -22,7 +22,7 @@ import {
 } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
 import { useWorkspaceStore } from "@/stores/workspace"
-import { cn, openExternalUrl } from "@/lib/utils"
+import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { SettingCard } from "./shared"
