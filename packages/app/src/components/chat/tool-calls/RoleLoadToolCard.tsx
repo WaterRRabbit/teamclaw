@@ -1,8 +1,9 @@
-import React from "react";
 import { AlertTriangle, CheckCircle2, Loader2, UserRound } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { ToolCall } from "@/stores/session";
+
+type TranslateFn = ReturnType<typeof useTranslation>["t"];
 
 function getRoleName(toolCall: ToolCall, fallback: string): string {
   const args = toolCall.arguments as Record<string, unknown> | undefined;
@@ -24,7 +25,7 @@ function getLoadedSkillCount(result: unknown): number | null {
 function getStatusCopy(
   toolCall: ToolCall,
   skillCount: number | null,
-  t: (key: string, defaultValueOrOptions?: unknown, options?: unknown) => string,
+  t: TranslateFn,
 ) {
   if (toolCall.status === "failed") {
     return {

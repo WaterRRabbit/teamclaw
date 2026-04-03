@@ -1,6 +1,6 @@
 import * as React from "react"
 import { useTranslation } from "react-i18next"
-import { Search, SquarePen, MessageSquare, Loader2, Archive, PanelLeftIcon, FolderOpen, Users, Cloud, Pencil, Ellipsis, Clock, Sparkles, Bookmark, Settings, Pin } from "lucide-react"
+import { Search, SquarePen, MessageSquare, Loader2, Archive, PanelLeftIcon, FolderOpen, Users, Cloud, Pencil, Ellipsis, Clock, Sparkles, Bookmark, Settings, Pin, UserRound } from "lucide-react"
 import { isWorkspaceUIVariant } from "@/lib/ui-variant"
 
 import { useSessionStore } from "@/stores/session"
@@ -59,6 +59,7 @@ const WORKSPACE_QUICK_SECTIONS: {
   color: string
 }[] = [
   { id: 'automation', labelKey: 'settings.nav.automation', fallback: 'Automation', icon: Clock, color: 'text-amber-500' },
+  { id: 'roles', labelKey: 'settings.nav.roles', fallback: 'Roles', icon: UserRound, color: 'text-sky-500' },
   { id: 'skills', labelKey: 'settings.nav.skills', fallback: 'Skills', icon: Sparkles, color: 'text-yellow-500' },
 ]
 
@@ -913,6 +914,26 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 />
                 <span className="truncate text-xs">
                   {t('settings.nav.automation', 'Automation')}
+                </span>
+              </Button>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  'h-7 justify-start gap-1.5 px-2 font-normal',
+                  embeddedSettingsSection === 'roles' && 'bg-primary/10 text-primary font-medium',
+                )}
+                onClick={() => handleQuickAccessEmbeddedSection('roles')}
+              >
+                <UserRound
+                  className={cn(
+                    'h-3.5 w-3.5 shrink-0',
+                    embeddedSettingsSection === 'roles' ? 'text-sky-500' : 'text-muted-foreground',
+                  )}
+                />
+                <span className="truncate text-xs">
+                  {t('settings.nav.roles', 'Roles')}
                 </span>
               </Button>
 

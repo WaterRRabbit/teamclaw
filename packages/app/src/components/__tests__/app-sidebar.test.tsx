@@ -237,19 +237,21 @@ describe('AppSidebar', () => {
     expect(buttons.length).toBeGreaterThan(2)
   })
 
-  it('with workspace UI variant shows Shortcuts above Automation and Skills', () => {
+  it('with workspace UI variant shows Shortcuts above Automation, Roles and Skills', () => {
     uiVariantMocks.workspaceShell = true
     render(<AppSidebar />)
     expect(screen.getByText('Shortcuts')).toBeDefined()
     expect(screen.getByText('Automation')).toBeDefined()
+    expect(screen.getByText('Roles')).toBeDefined()
     expect(screen.getByText('Skills')).toBeDefined()
   })
 
-  it('default mode renders Quick Access section with all four entries', () => {
+  it('default mode renders Quick Access section with all five entries', () => {
     uiVariantMocks.workspaceShell = false
     render(<AppSidebar />)
     expect(screen.getByText('Shortcuts')).toBeDefined()
     expect(screen.getByText('Automation')).toBeDefined()
+    expect(screen.getByText('Roles')).toBeDefined()
     expect(screen.getByText('Skills')).toBeDefined()
     expect(screen.getByText('Files')).toBeDefined()
   })
