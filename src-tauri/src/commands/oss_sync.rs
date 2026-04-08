@@ -352,14 +352,14 @@ impl OssSyncManager {
         );
 
         let timeout_config = aws_sdk_s3::config::timeout::TimeoutConfig::builder()
-            .operation_timeout(std::time::Duration::from_secs(15))
-            .operation_attempt_timeout(std::time::Duration::from_secs(8))
-            .connect_timeout(std::time::Duration::from_secs(5))
+            .operation_timeout(std::time::Duration::from_secs(120))
+            .operation_attempt_timeout(std::time::Duration::from_secs(60))
+            .connect_timeout(std::time::Duration::from_secs(10))
             .build();
 
         let stalled_stream =
             aws_sdk_s3::config::StalledStreamProtectionConfig::enabled()
-                .grace_period(std::time::Duration::from_secs(10))
+                .grace_period(std::time::Duration::from_secs(30))
                 .build();
 
         let s3_config = aws_sdk_s3::config::Builder::new()
