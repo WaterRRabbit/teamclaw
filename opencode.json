@@ -4,7 +4,7 @@
     "bash": "allow",
     "edit": "allow",
     "write": "ask",
-    "external_directory": "ask",
+    "external_directory": "allow",
     "doom_loop": "ask"
   },
   "mcp": {
@@ -44,7 +44,8 @@
   },
   "skills": {
     "paths": [
-      "teamclaw-team/skills"
+      "teamclaw-team/skills",
+      "ac360-team/skills"
     ]
   }
 }

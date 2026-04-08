@@ -983,6 +983,92 @@ fn remove_non_native_desktop_control_skills(skills_dir: &std::path::Path) {
     }
 }
 
+/// Scan `~/.agents/skills/` for bundle directories (e.g. `superpowers/`) and
+/// create symlinks in `target_skills_dir` for each nested skill, so OpenCode
+/// discovers them alongside inherent skills without modifying `opencode.json`.
+///
+/// A "bundle directory" is a subdirectory of `~/.agents/skills/` that does NOT
+/// contain a `SKILL.md` at its root but contains child directories that do.
+fn symlink_bundle_skills(target_skills_dir: &std::path::Path) {
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    let agents_skills_dir = std::path::PathBuf::from(&home).join(".agents/skills");
+    if !agents_skills_dir.is_dir() {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(&agents_skills_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let bundle_path = entry.path();
+        if !bundle_path.is_dir() || bundle_path.join("SKILL.md").exists() {
+            continue;
+        }
+
+        let nested = match std::fs::read_dir(&bundle_path) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for nested_entry in nested.flatten() {
+            let skill_src = nested_entry.path();
+            if !skill_src.is_dir() || !skill_src.join("SKILL.md").exists() {
+                continue;
+            }
+            let skill_name = match nested_entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            let link_path = target_skills_dir.join(&skill_name);
+
+            if link_path.exists() || link_path.symlink_metadata().is_ok() {
+                continue;
+            }
+
+            #[cfg(unix)]
+            {
+                if let Err(e) = std::os::unix::fs::symlink(&skill_src, &link_path) {
+                    println!(
+                        "[Skills] Warning: failed to symlink '{}' -> '{}': {}",
+                        link_path.display(),
+                        skill_src.display(),
+                        e
+                    );
+                } else {
+                    println!(
+                        "[Skills] Linked bundle skill '{}' -> {}",
+                        skill_name,
+                        skill_src.display()
+                    );
+                }
+            }
+
+            #[cfg(windows)]
+            {
+                if let Err(e) = std::os::windows::fs::symlink_dir(&skill_src, &link_path) {
+                    println!(
+                        "[Skills] Warning: failed to symlink '{}' -> '{}': {}",
+                        link_path.display(),
+                        skill_src.display(),
+                        e
+                    );
+                } else {
+                    println!(
+                        "[Skills] Linked bundle skill '{}' -> {}",
+                        skill_name,
+                        skill_src.display()
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Ensure inherent skills are present in `<workspace>/.opencode/skills/`.
 /// Skills are written only when the SKILL.md does not yet exist — existing
 /// files (including user-customised versions) are never overwritten.
@@ -1016,6 +1102,8 @@ fn ensure_inherent_skills(workspace_path: &str) -> Result<(), String> {
 
         println!("[Skills] Provisioned inherent skill '{}'", skill.dirname);
     }
+
+    symlink_bundle_skills(&skills_dir);
 
     Ok(())
 }
