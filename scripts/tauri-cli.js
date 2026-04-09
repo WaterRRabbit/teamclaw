@@ -34,7 +34,7 @@ const env = createRustBuildEnv(process.env, __dirname);
 
 const child = spawn("pnpm", ["exec", "tauri", ...args], {
   stdio: "inherit",
-  shell: false,
+  shell: isWindows,
   env,
 });
 child.on("exit", (code) => process.exit(code ?? 0));
