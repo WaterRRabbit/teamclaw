@@ -252,6 +252,20 @@ describe('ChatPanel submission flow', () => {
       // setDraftInput should be called with empty string to clear
       expect(mockSetDraftInput).toHaveBeenCalledWith('');
     });
+
+    it('preserves namespaced skill mentions in submitted content', async () => {
+      mockSessionState.draftInput = '/{superpowers/brainstorming}';
+
+      const { ChatPanel } = await import('../ChatPanel');
+      render(React.createElement(ChatPanel));
+
+      const submitBtn = screen.getByTestId('mock-submit');
+      await act(async () => {
+        fireEvent.click(submitBtn);
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledWith('[Skill: superpowers/brainstorming]', undefined, undefined);
+    });
   });
 
   describe('empty state with suggestions', () => {

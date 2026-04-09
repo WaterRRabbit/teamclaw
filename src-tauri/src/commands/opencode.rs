@@ -538,10 +538,22 @@ pub async fn start_opencode_inner(
         .map_err(|e| format!("Failed to create sidecar command: {}", e))?
         .args(["serve", "--port", &port_str])
         .current_dir(&workspace_path)
-        .env("XDG_DATA_HOME", xdg_base.join("data").to_string_lossy().as_ref())
-        .env("XDG_CONFIG_HOME", xdg_base.join("config").to_string_lossy().as_ref())
-        .env("XDG_STATE_HOME", xdg_base.join("state").to_string_lossy().as_ref())
-        .env("XDG_CACHE_HOME", xdg_base.join("cache").to_string_lossy().as_ref());
+        .env(
+            "XDG_DATA_HOME",
+            xdg_base.join("data").to_string_lossy().as_ref(),
+        )
+        .env(
+            "XDG_CONFIG_HOME",
+            xdg_base.join("config").to_string_lossy().as_ref(),
+        )
+        .env(
+            "XDG_STATE_HOME",
+            xdg_base.join("state").to_string_lossy().as_ref(),
+        )
+        .env(
+            "XDG_CACHE_HOME",
+            xdg_base.join("cache").to_string_lossy().as_ref(),
+        );
     // Inject device identity as environment variables
     let device_id = super::oss_commands::get_device_id().unwrap_or_default();
     if !device_id.is_empty() {
@@ -607,10 +619,7 @@ pub async fn start_opencode_inner(
                 }
                 CommandEvent::Terminated(payload) => {
                     let code = payload.code.unwrap_or(-1);
-                    eprintln!(
-                        "[OpenCode] Process terminated with code: {}",
-                        code
-                    );
+                    eprintln!("[OpenCode] Process terminated with code: {}", code);
                     if code != 0 {
                         let context = if stderr_lines.is_empty() {
                             format!("OpenCode process exited with code {}", code)
@@ -960,7 +969,10 @@ fn remove_non_native_desktop_control_skills(skills_dir: &std::path::Path) {
         let path = skills_dir.join(name);
         if path.is_dir() {
             match std::fs::remove_dir_all(&path) {
-                Ok(()) => println!("[Skills] Removed non-native desktop skill directory '{}'", name),
+                Ok(()) => println!(
+                    "[Skills] Removed non-native desktop skill directory '{}'",
+                    name
+                ),
                 Err(e) => println!(
                     "[Skills] Warning: could not remove '{}': {}",
                     path.display(),
@@ -978,6 +990,92 @@ fn remove_non_native_desktop_control_skills(skills_dir: &std::path::Path) {
     {
         remove_if_dir("macos-control");
         remove_if_dir("windows-control");
+    }
+}
+
+/// Scan `~/.agents/skills/` for bundle directories (e.g. `superpowers/`) and
+/// create symlinks in `target_skills_dir` for each nested skill, so OpenCode
+/// discovers them alongside inherent skills without modifying `opencode.json`.
+///
+/// A "bundle directory" is a subdirectory of `~/.agents/skills/` that does NOT
+/// contain a `SKILL.md` at its root but contains child directories that do.
+fn symlink_bundle_skills(target_skills_dir: &std::path::Path) {
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    let agents_skills_dir = std::path::PathBuf::from(&home).join(".agents/skills");
+    if !agents_skills_dir.is_dir() {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(&agents_skills_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let bundle_path = entry.path();
+        if !bundle_path.is_dir() || bundle_path.join("SKILL.md").exists() {
+            continue;
+        }
+
+        let nested = match std::fs::read_dir(&bundle_path) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for nested_entry in nested.flatten() {
+            let skill_src = nested_entry.path();
+            if !skill_src.is_dir() || !skill_src.join("SKILL.md").exists() {
+                continue;
+            }
+            let skill_name = match nested_entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            let link_path = target_skills_dir.join(&skill_name);
+
+            if link_path.exists() || link_path.symlink_metadata().is_ok() {
+                continue;
+            }
+
+            #[cfg(unix)]
+            {
+                if let Err(e) = std::os::unix::fs::symlink(&skill_src, &link_path) {
+                    println!(
+                        "[Skills] Warning: failed to symlink '{}' -> '{}': {}",
+                        link_path.display(),
+                        skill_src.display(),
+                        e
+                    );
+                } else {
+                    println!(
+                        "[Skills] Linked bundle skill '{}' -> {}",
+                        skill_name,
+                        skill_src.display()
+                    );
+                }
+            }
+
+            #[cfg(windows)]
+            {
+                if let Err(e) = std::os::windows::fs::symlink_dir(&skill_src, &link_path) {
+                    println!(
+                        "[Skills] Warning: failed to symlink '{}' -> '{}': {}",
+                        link_path.display(),
+                        skill_src.display(),
+                        e
+                    );
+                } else {
+                    println!(
+                        "[Skills] Linked bundle skill '{}' -> {}",
+                        skill_name,
+                        skill_src.display()
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -1014,6 +1112,8 @@ fn ensure_inherent_skills(workspace_path: &str) -> Result<(), String> {
 
         println!("[Skills] Provisioned inherent skill '{}'", skill.dirname);
     }
+
+    symlink_bundle_skills(&skills_dir);
 
     Ok(())
 }
@@ -1516,8 +1616,8 @@ pub async fn stop_opencode(state: State<'_, OpenCodeState>) -> Result<(), String
 
 fn get_opencode_db_path(workspace_path: &str) -> Result<String, String> {
     // With XDG isolation, the DB lives at <workspace>/.opencode/data/opencode/opencode.db
-    let isolated_path = std::path::PathBuf::from(workspace_path)
-        .join(".opencode/data/opencode/opencode.db");
+    let isolated_path =
+        std::path::PathBuf::from(workspace_path).join(".opencode/data/opencode/opencode.db");
     if isolated_path.exists() {
         return Ok(isolated_path.to_string_lossy().to_string());
     }

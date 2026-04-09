@@ -2,10 +2,10 @@ pub mod config;
 pub mod discord;
 pub mod email;
 pub mod email_config;
-pub mod i18n;
 pub mod email_db;
 pub mod feishu;
 pub mod feishu_config;
+pub mod i18n;
 pub mod kook;
 pub mod kook_config;
 pub mod pending_question;
@@ -738,14 +738,25 @@ pub async fn opencode_get_available_models(port: u16) -> Result<(Vec<ModelInfo>,
 }
 
 /// Format the model list response for chat commands
-fn format_model_list(models: &[ModelInfo], active_model: &str, is_custom: bool, locale: i18n::Locale) -> String {
+fn format_model_list(
+    models: &[ModelInfo],
+    active_model: &str,
+    is_custom: bool,
+    locale: i18n::Locale,
+) -> String {
     const MAX_LENGTH: usize = 1900; // Leave buffer for Discord's 2000 char limit
 
     let mut text = String::new();
     if is_custom {
-        text.push_str(&i18n::t(i18n::MsgKey::CurrentModelCustom(active_model), locale));
+        text.push_str(&i18n::t(
+            i18n::MsgKey::CurrentModelCustom(active_model),
+            locale,
+        ));
     } else {
-        text.push_str(&i18n::t(i18n::MsgKey::CurrentModelDefault(active_model), locale));
+        text.push_str(&i18n::t(
+            i18n::MsgKey::CurrentModelDefault(active_model),
+            locale,
+        ));
     }
     text.push_str(&i18n::t(i18n::MsgKey::AvailableModels, locale));
 
@@ -941,7 +952,11 @@ pub async fn opencode_list_sessions(port: u16) -> Result<Vec<SessionInfo>, Strin
 }
 
 /// Fetch the latest assistant message text from a session
-async fn fetch_latest_assistant_message(port: u16, session_id: &str, locale: i18n::Locale) -> Result<String, String> {
+async fn fetch_latest_assistant_message(
+    port: u16,
+    session_id: &str,
+    locale: i18n::Locale,
+) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -1095,12 +1110,11 @@ pub async fn handle_sessions_command(
 
                 // Fetch latest assistant message
                 match fetch_latest_assistant_message(port, &target.id, locale).await {
-                    Ok(latest) => {
-                        i18n::t(i18n::MsgKey::SwitchedToSessionWithLatest(title, &latest), locale)
-                    }
-                    Err(_) => {
-                        i18n::t(i18n::MsgKey::SwitchedToSessionNoLatest(title), locale)
-                    }
+                    Ok(latest) => i18n::t(
+                        i18n::MsgKey::SwitchedToSessionWithLatest(title, &latest),
+                        locale,
+                    ),
+                    Err(_) => i18n::t(i18n::MsgKey::SwitchedToSessionNoLatest(title), locale),
                 }
             }
             Err(e) => i18n::t(i18n::MsgKey::FailedToListSessions(&e), locale),
@@ -1140,7 +1154,10 @@ pub async fn handle_stop_command(
             } else {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
-                i18n::t(i18n::MsgKey::FailedToStopSessionWithStatus(status.as_u16(), &body), locale)
+                i18n::t(
+                    i18n::MsgKey::FailedToStopSessionWithStatus(status.as_u16(), &body),
+                    locale,
+                )
             }
         }
         Err(e) => i18n::t(i18n::MsgKey::FailedToStopSession(&e.to_string()), locale),
@@ -1314,7 +1331,9 @@ pub async fn start_gateway(
     // Get OpenCode port and workspace path
     let (port, workspace_path) = {
         let inner = opencode_state.inner.lock().map_err(|e| e.to_string())?;
-        let ws = inner.workspace_path.clone()
+        let ws = inner
+            .workspace_path
+            .clone()
             .ok_or("No workspace path set. Please select a workspace first.")?;
         (inner.port, ws)
     };
@@ -1344,8 +1363,9 @@ pub async fn start_gateway(
             .map_err(|e| e.to_string())?;
 
         let session_mapping = gateway_state.shared_session_mapping.clone();
-        let gateway =
-            gateway_guard.get_or_insert_with(|| DiscordGateway::new(port, session_mapping, workspace_path.clone()));
+        let gateway = gateway_guard.get_or_insert_with(|| {
+            DiscordGateway::new(port, session_mapping, workspace_path.clone())
+        });
         gateway.clone()
     };
 
@@ -1457,7 +1477,9 @@ pub async fn start_feishu_gateway(
 ) -> Result<(), String> {
     let (port, workspace_path) = {
         let inner = opencode_state.inner.lock().map_err(|e| e.to_string())?;
-        let ws = inner.workspace_path.clone()
+        let ws = inner
+            .workspace_path
+            .clone()
             .ok_or("No workspace path set. Please select a workspace first.")?;
         (inner.port, ws)
     };
@@ -1483,8 +1505,9 @@ pub async fn start_feishu_gateway(
             .map_err(|e| e.to_string())?;
 
         let session_mapping = gateway_state.shared_session_mapping.clone();
-        let gateway =
-            gateway_guard.get_or_insert_with(|| FeishuGateway::new(port, session_mapping, workspace_path.clone()));
+        let gateway = gateway_guard.get_or_insert_with(|| {
+            FeishuGateway::new(port, session_mapping, workspace_path.clone())
+        });
         gateway.clone()
     };
 
@@ -1618,7 +1641,9 @@ pub async fn start_email_gateway(
 ) -> Result<(), String> {
     let (port, workspace_path) = {
         let inner = opencode_state.inner.lock().map_err(|e| e.to_string())?;
-        let ws = inner.workspace_path.clone()
+        let ws = inner
+            .workspace_path
+            .clone()
             .ok_or("No workspace path set. Please select a workspace first.")?;
         (inner.port, ws)
     };
@@ -1785,7 +1810,9 @@ pub async fn start_kook_gateway(
 ) -> Result<(), String> {
     let (port, workspace_path) = {
         let inner = opencode_state.inner.lock().map_err(|e| e.to_string())?;
-        let ws = inner.workspace_path.clone()
+        let ws = inner
+            .workspace_path
+            .clone()
             .ok_or("No workspace path set. Please select a workspace first.")?;
         (inner.port, ws)
     };
@@ -1820,7 +1847,11 @@ pub async fn start_kook_gateway(
             .map_err(|e| e.to_string())?;
 
         if guard.is_none() {
-            let gateway = KookGateway::new(port, gateway_state.shared_session_mapping.clone(), workspace_path.clone());
+            let gateway = KookGateway::new(
+                port,
+                gateway_state.shared_session_mapping.clone(),
+                workspace_path.clone(),
+            );
             *guard = Some(gateway);
         }
 
@@ -1973,7 +2004,9 @@ pub async fn start_wecom_gateway(
 ) -> Result<(), String> {
     let (port, workspace_path) = {
         let inner = opencode_state.inner.lock().map_err(|e| e.to_string())?;
-        let ws = inner.workspace_path.clone()
+        let ws = inner
+            .workspace_path
+            .clone()
             .ok_or("No workspace path set. Please select a workspace first.")?;
         (inner.port, ws)
     };
@@ -2026,7 +2059,11 @@ pub async fn start_wecom_gateway(
             .map_err(|e| e.to_string())?;
 
         if guard.is_none() {
-            let gateway = WeComGateway::new(port, gateway_state.shared_session_mapping.clone(), workspace_path.clone());
+            let gateway = WeComGateway::new(
+                port,
+                gateway_state.shared_session_mapping.clone(),
+                workspace_path.clone(),
+            );
             *guard = Some(gateway);
         }
 
@@ -2144,7 +2181,9 @@ pub async fn start_wecom_qr_auth() -> Result<wecom_config::WeComQrAuthStart, Str
 
 /// Poll WeCom QR code authorization result
 #[tauri::command]
-pub async fn poll_wecom_qr_auth(scode: String) -> Result<wecom_config::WeComQrAuthPollResult, String> {
+pub async fn poll_wecom_qr_auth(
+    scode: String,
+) -> Result<wecom_config::WeComQrAuthPollResult, String> {
     wecom::poll_wecom_qr_result(&scode).await
 }
 
@@ -2203,7 +2242,9 @@ pub async fn start_wechat_gateway(
 ) -> Result<(), String> {
     let (port, workspace_path) = {
         let inner = opencode_state.inner.lock().map_err(|e| e.to_string())?;
-        let ws = inner.workspace_path.clone()
+        let ws = inner
+            .workspace_path
+            .clone()
             .ok_or("No workspace path set. Please select a workspace first.")?;
         (inner.port, ws)
     };
@@ -2256,7 +2297,11 @@ pub async fn start_wechat_gateway(
             .map_err(|e| e.to_string())?;
 
         if guard.is_none() {
-            let gateway = WeChatGateway::new(port, gateway_state.shared_session_mapping.clone(), workspace_path.clone());
+            let gateway = WeChatGateway::new(
+                port,
+                gateway_state.shared_session_mapping.clone(),
+                workspace_path.clone(),
+            );
             *guard = Some(gateway);
         }
 

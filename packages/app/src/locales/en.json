@@ -1674,6 +1674,8 @@
     "supportedPlatforms": "Supported platforms:",
     "genericGit": "Any git repository",
     "gitUrlRequired": "Please enter both git URL and skill name",
+    "workspaceRequiredForGit": "Open a workspace folder first — skills install into .opencode/skills in that project.",
+    "unknownDate": "—",
     "metadata": "Skill Metadata",
     "contentNotAvailable": "Content not available",
     "contentNotAvailableHint": "Unable to fetch skill content from repository",

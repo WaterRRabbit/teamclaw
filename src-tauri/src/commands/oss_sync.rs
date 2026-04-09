@@ -4,8 +4,8 @@ use crate::commands::version_types::MAX_VERSIONS;
 use crate::commands::TEAMCLAW_DIR;
 
 use aws_sdk_s3::primitives::ByteStream;
-use futures::stream::{self, StreamExt};
 use chrono::Utc;
+use futures::stream::{self, StreamExt};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -1170,15 +1170,20 @@ impl OssSyncManager {
                     let entry_map = files_map
                         .get_or_create_container(path, loro::LoroMap::new())
                         .map_err(|e| format!("Failed to get/create map entry for {path}: {e}"))?;
-                    entry_map.insert("content", content_str.as_str())
+                    entry_map
+                        .insert("content", content_str.as_str())
                         .map_err(|e| format!("Failed to set content for {path}: {e}"))?;
-                    entry_map.insert("hash", hash.as_str())
+                    entry_map
+                        .insert("hash", hash.as_str())
                         .map_err(|e| format!("Failed to set hash for {path}: {e}"))?;
-                    entry_map.insert("deleted", false)
+                    entry_map
+                        .insert("deleted", false)
                         .map_err(|e| format!("Failed to set deleted for {path}: {e}"))?;
-                    entry_map.insert("updatedBy", node_id.as_str())
+                    entry_map
+                        .insert("updatedBy", node_id.as_str())
                         .map_err(|e| format!("Failed to set updatedBy for {path}: {e}"))?;
-                    entry_map.insert("updatedAt", now.as_str())
+                    entry_map
+                        .insert("updatedAt", now.as_str())
                         .map_err(|e| format!("Failed to set updatedAt for {path}: {e}"))?;
                 }
             }
@@ -1188,19 +1193,17 @@ impl OssSyncManager {
         let updates = {
             let doc = self.get_doc(doc_type);
             match self.last_exported_version.get(&doc_type) {
-                Some(vv_bytes) => {
-                    match loro::VersionVector::decode(vv_bytes) {
-                        Ok(vv) => doc
-                            .export(loro::ExportMode::updates(&vv))
-                            .unwrap_or_else(|_| {
-                                doc.export(loro::ExportMode::all_updates())
-                                    .unwrap_or_default()
-                            }),
-                        Err(_) => doc
-                            .export(loro::ExportMode::all_updates())
-                            .map_err(|e| format!("Failed to export updates for {:?}: {e}", doc_type))?,
-                    }
-                }
+                Some(vv_bytes) => match loro::VersionVector::decode(vv_bytes) {
+                    Ok(vv) => doc
+                        .export(loro::ExportMode::updates(&vv))
+                        .unwrap_or_else(|_| {
+                            doc.export(loro::ExportMode::all_updates())
+                                .unwrap_or_default()
+                        }),
+                    Err(_) => doc
+                        .export(loro::ExportMode::all_updates())
+                        .map_err(|e| format!("Failed to export updates for {:?}: {e}", doc_type))?,
+                },
                 None => doc
                     .export(loro::ExportMode::all_updates())
                     .map_err(|e| format!("Failed to export updates for {:?}: {e}", doc_type))?,
@@ -1791,26 +1794,20 @@ impl OssSyncManager {
         let updates = {
             let doc = self.get_doc(doc_type);
             match self.last_exported_version.get(&doc_type) {
-                Some(vv_bytes) => {
-                    match loro::VersionVector::decode(vv_bytes) {
-                        Ok(vv) => doc
-                            .export(loro::ExportMode::updates(&vv))
-                            .unwrap_or_else(|_| {
-                                doc.export(loro::ExportMode::all_updates())
-                                    .unwrap_or_default()
-                            }),
-                        Err(_) => doc
-                            .export(loro::ExportMode::all_updates())
-                            .map_err(|e| {
-                                format!("Failed to export loro updates for {:?}: {e}", doc_type)
-                            })?,
-                    }
-                }
-                None => doc
-                    .export(loro::ExportMode::all_updates())
-                    .map_err(|e| {
+                Some(vv_bytes) => match loro::VersionVector::decode(vv_bytes) {
+                    Ok(vv) => doc
+                        .export(loro::ExportMode::updates(&vv))
+                        .unwrap_or_else(|_| {
+                            doc.export(loro::ExportMode::all_updates())
+                                .unwrap_or_default()
+                        }),
+                    Err(_) => doc.export(loro::ExportMode::all_updates()).map_err(|e| {
                         format!("Failed to export loro updates for {:?}: {e}", doc_type)
                     })?,
+                },
+                None => doc.export(loro::ExportMode::all_updates()).map_err(|e| {
+                    format!("Failed to export loro updates for {:?}: {e}", doc_type)
+                })?,
             }
         };
 
@@ -2709,7 +2706,10 @@ impl OssSyncManager {
                             match manager.write_doc_to_disk(doc_type) {
                                 Ok(true) => needs_upload = true, // absorbed local files
                                 Ok(false) => {}
-                                Err(e) => warn!("OSS fast write_doc_to_disk error for {:?}: {}", doc_type, e),
+                                Err(e) => warn!(
+                                    "OSS fast write_doc_to_disk error for {:?}: {}",
+                                    doc_type, e
+                                ),
                             }
                         }
 
@@ -2760,7 +2760,10 @@ impl OssSyncManager {
                 }
             } else {
                 if consecutive_failures > 0 {
-                    info!("Fast loop: network recovered after {} failures", consecutive_failures);
+                    info!(
+                        "Fast loop: network recovered after {} failures",
+                        consecutive_failures
+                    );
                 }
                 consecutive_failures = 0;
             }
@@ -2799,7 +2802,9 @@ impl OssSyncManager {
                         match manager.write_doc_to_disk(doc_type) {
                             Ok(true) => needs_absorb_upload = true,
                             Ok(false) => {}
-                            Err(e) => warn!("OSS slow write_doc_to_disk error for {:?}: {}", doc_type, e),
+                            Err(e) => {
+                                warn!("OSS slow write_doc_to_disk error for {:?}: {}", doc_type, e)
+                            }
                         }
                         let _ = manager.persist_local_snapshot(doc_type);
                     }
@@ -2888,7 +2893,10 @@ impl OssSyncManager {
                         backoff.min(max_interval)
                     } else {
                         if consecutive_failures > 0 {
-                            info!("Slow loop: network recovered after {} failures", consecutive_failures);
+                            info!(
+                                "Slow loop: network recovered after {} failures",
+                                consecutive_failures
+                            );
                         }
                         consecutive_failures = 0;
                         manager.poll_interval
@@ -4621,8 +4629,7 @@ pub fn read_sync_cursor(workspace_path: &str) -> SyncCursor {
 pub fn write_sync_cursor(workspace_path: &str, cursor: &SyncCursor) -> Result<(), String> {
     let path = sync_cursor_path(workspace_path);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create cursor dir: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create cursor dir: {e}"))?;
     }
     let json = serde_json::to_string_pretty(cursor)
         .map_err(|e| format!("Failed to serialize sync cursor: {e}"))?;

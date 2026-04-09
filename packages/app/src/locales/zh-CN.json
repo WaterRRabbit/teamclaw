@@ -1679,6 +1679,8 @@
     "supportedPlatforms": "支持的平台：",
     "genericGit": "任意 git 仓库",
     "gitUrlRequired": "请输入 git URL 和技能名称",
+    "workspaceRequiredForGit": "请先打开工作区文件夹 — 技能会安装到该项目下的 .opencode/skills。",
+    "unknownDate": "—",
     "metadata": "技能元数据",
     "contentNotAvailable": "内容不可用",
     "contentNotAvailableHint": "无法从仓库获取技能内容",

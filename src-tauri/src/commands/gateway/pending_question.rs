@@ -464,7 +464,11 @@ mod tests {
                 },
             ],
         }];
-        let msg = format_question_message(&questions, "q_123", crate::commands::gateway::i18n::Locale::En);
+        let msg = format_question_message(
+            &questions,
+            "q_123",
+            crate::commands::gateway::i18n::Locale::En,
+        );
         assert!(msg.contains("Continue with the refactor?"));
         assert!(msg.contains("1. Yes"));
         assert!(msg.contains("2. No"));
@@ -478,7 +482,11 @@ mod tests {
             question: "What should I name this variable?".to_string(),
             options: vec![],
         }];
-        let msg = format_question_message(&questions, "q_456", crate::commands::gateway::i18n::Locale::En);
+        let msg = format_question_message(
+            &questions,
+            "q_456",
+            crate::commands::gateway::i18n::Locale::En,
+        );
         assert!(msg.contains("What should I name this variable?"));
         assert!(!msg.contains("1."));
         assert!(msg.contains("[Q:q_456]"));
@@ -496,7 +504,11 @@ mod tests {
                 options: vec![],
             },
         ];
-        let msg = format_question_message(&questions, "q_multi", crate::commands::gateway::i18n::Locale::En);
+        let msg = format_question_message(
+            &questions,
+            "q_multi",
+            crate::commands::gateway::i18n::Locale::En,
+        );
         assert!(msg.contains("**Question 1:**"));
         assert!(msg.contains("**Question 2:**"));
     }
@@ -582,15 +594,27 @@ mod tests {
             QuestionInfo {
                 question: "Language?".to_string(),
                 options: vec![
-                    QuestionOption { label: "Python".to_string(), value: Some("python".to_string()) },
-                    QuestionOption { label: "Rust".to_string(), value: Some("rust".to_string()) },
+                    QuestionOption {
+                        label: "Python".to_string(),
+                        value: Some("python".to_string()),
+                    },
+                    QuestionOption {
+                        label: "Rust".to_string(),
+                        value: Some("rust".to_string()),
+                    },
                 ],
             },
             QuestionInfo {
                 question: "Framework?".to_string(),
                 options: vec![
-                    QuestionOption { label: "React".to_string(), value: Some("react".to_string()) },
-                    QuestionOption { label: "Vue".to_string(), value: Some("vue".to_string()) },
+                    QuestionOption {
+                        label: "React".to_string(),
+                        value: Some("react".to_string()),
+                    },
+                    QuestionOption {
+                        label: "Vue".to_string(),
+                        value: Some("vue".to_string()),
+                    },
                 ],
             },
         ];

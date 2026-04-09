@@ -56,6 +56,20 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 
+function formatTauriInvokeError(err: unknown): string {
+  if (err == null) return String(err)
+  if (typeof err === 'string') return err
+  if (err instanceof Error) return err.message
+  if (
+    typeof err === 'object' &&
+    'message' in err &&
+    typeof (err as { message: unknown }).message === 'string'
+  ) {
+    return (err as { message: string }).message
+  }
+  return String(err)
+}
+
 interface SkillsMarketplaceProps {
   onInstalled?: () => void | Promise<void>
 }
@@ -124,7 +138,7 @@ export const SkillsMarketplace = React.memo(function SkillsMarketplace({
       setLeaderboard(data)
     } catch (err) {
       console.error("[SkillsMarketplace] Failed to fetch leaderboard:", err)
-      setError(err instanceof Error ? err.message : String(err))
+      setError(formatTauriInvokeError(err))
     } finally {
       setIsLoading(false)
     }
@@ -147,7 +161,7 @@ export const SkillsMarketplace = React.memo(function SkillsMarketplace({
       setLeaderboard(data)
     } catch (err) {
       console.error("[SkillsMarketplace] Failed to search skills:", err)
-      setError(err instanceof Error ? err.message : String(err))
+      setError(formatTauriInvokeError(err))
     } finally {
       setIsLoading(false)
     }
@@ -226,7 +240,7 @@ export const SkillsMarketplace = React.memo(function SkillsMarketplace({
       await onInstalled?.()
     } catch (err) {
       console.error("[SkillsMarketplace] Failed to install skill:", err)
-      setError(err instanceof Error ? err.message : String(err))
+      setError(formatTauriInvokeError(err))
     } finally {
       setInstallingSlugs((prev) => {
         const next = new Set(prev)
@@ -624,6 +638,16 @@ export const SkillsMarketplace = React.memo(function SkillsMarketplace({
                       return
                     }
 
+                    if (!workspacePath) {
+                      setError(
+                        t(
+                          "skillssh.workspaceRequiredForGit",
+                          "Open a workspace folder first — skills install into .opencode/skills in that project.",
+                        ),
+                      )
+                      return
+                    }
+
                     const tag = skillName || source
                     setInstallingSlugs((prev) => new Set(prev).add(tag))
                     try {
@@ -641,7 +665,7 @@ export const SkillsMarketplace = React.memo(function SkillsMarketplace({
                       skillInput.value = ''
                     } catch (err) {
                       console.error("[SkillsMarketplace] npx skills add failed:", err)
-                      setError(err instanceof Error ? err.message : String(err))
+                      setError(formatTauriInvokeError(err))
                     } finally {
                       setInstallingSlugs((prev) => {
                         const next = new Set(prev)
@@ -650,6 +674,7 @@ export const SkillsMarketplace = React.memo(function SkillsMarketplace({
                       })
                     }
                   }}
+                  disabled={!workspacePath}
                 >
                   <Download className="h-3.5 w-3.5" />
                   {t("skillssh.install", "Install")}
@@ -747,7 +772,9 @@ export const SkillsMarketplace = React.memo(function SkillsMarketplace({
                     <span className="text-xs">{t("skillssh.total", "Total")}</span>
                   </div>
                   <span className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
-                    {(leaderboard.totalInstalls / 1000).toFixed(0)}K+
+                    {Number.isFinite(leaderboard.totalInstalls) && leaderboard.totalInstalls >= 0
+                      ? `${Math.round(leaderboard.totalInstalls / 1000)}K+`
+                      : '—'}
                   </span>
                   <span className="text-xs text-muted-foreground">{t("skillssh.totalInstalls", "installs")}</span>
                 </div>
@@ -758,7 +785,9 @@ export const SkillsMarketplace = React.memo(function SkillsMarketplace({
                     <span className="text-xs">{t("skillssh.updated", "Updated")}</span>
                   </div>
                   <span className="text-2xl font-bold text-blue-600 dark:text-blue-400">
-                    {new Date(leaderboard.lastUpdated * 1000).toLocaleDateString()}
+                    {Number.isFinite(leaderboard.lastUpdated) && leaderboard.lastUpdated > 0
+                      ? new Date(leaderboard.lastUpdated * 1000).toLocaleDateString()
+                      : t('skillssh.unknownDate', '—')}
                   </span>
                   <span className="text-xs text-muted-foreground">{t("skillssh.lastSync", "last sync")}</span>
                 </div>
