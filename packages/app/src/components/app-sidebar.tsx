@@ -503,6 +503,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   // UI-level pagination: filter by cron toggle, then slice to visible count
   const sessions = React.useMemo(
     () => allSessions
+      .filter(s => !s.parentID)
       .filter(s => showCronSessions
         ? cronSessionIds.has(s.id)
         : !cronSessionIds.has(s.id)

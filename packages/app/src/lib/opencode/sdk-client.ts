@@ -109,6 +109,7 @@ export interface OpenCodeClientCompat {
   createSession: typeof createSession
   listSessions: typeof listSessions
   getSession: typeof getSession
+  getSessionChildren: typeof getSessionChildren
   deleteSession: typeof deleteSession
   archiveSession: typeof archiveSession
   updateSession: typeof updateSession
@@ -153,7 +154,7 @@ let compatClient: OpenCodeClientCompat | null = null
 
 function buildCompat(): OpenCodeClientCompat {
   return {
-    createSession, listSessions, getSession, deleteSession,
+    createSession, listSessions, getSession, getSessionChildren, deleteSession,
     archiveSession, updateSession, abortSession, getMessages,
     sendMessage, sendMessageWithParts, sendMessageAsync,
     sendMessageWithPartsAsync, replyQuestion, rejectQuestion,
@@ -237,6 +238,12 @@ export async function getSession(id: string): Promise<Session> {
   const c = getRawSdkClient()
   const result = await c.session.get({ sessionID: id, directory: dir() })
   return unwrap(result) as unknown as Session
+}
+
+export async function getSessionChildren(id: string): Promise<SessionListItem[]> {
+  const c = getRawSdkClient()
+  const result = await c.session.children({ sessionID: id, directory: dir() })
+  return unwrap(result) as unknown as SessionListItem[]
 }
 
 export async function deleteSession(id: string): Promise<void> {

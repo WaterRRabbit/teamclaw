@@ -10,6 +10,12 @@ vi.mock('@/lib/notification-service', () => ({
 
 vi.mock('@/lib/opencode/sdk-types', () => ({}))
 
+vi.mock('@/lib/opencode/sdk-client', () => ({
+  getOpenCodeClient: () => ({
+    getSession: vi.fn(() => Promise.resolve(null)),
+  }),
+}))
+
 vi.mock('@/lib/opencode/sdk-sse', () => ({
   registerChildSession: vi.fn(),
   isChildSession: vi.fn(() => false),
@@ -124,12 +130,15 @@ describe('session-sse-lifecycle-handlers', () => {
     expect(selfCreatedSessionIds.has('sess-new')).toBe(false)
   })
 
-  it('handleSessionCreated triggers refresh for external sessions', () => {
+  it('handleSessionCreated triggers refresh for external sessions', async () => {
     handlers.handleSessionCreated({
       sessionId: 'sess-ext',
       type: 'session.created',
     } as any)
-    expect(debouncedRefreshSessions).toHaveBeenCalled()
+    // Wait for the async API check to resolve
+    await vi.waitFor(() => {
+      expect(debouncedRefreshSessions).toHaveBeenCalled()
+    })
     expect(state.highlightedSessionIds).toContain('sess-ext')
   })
 

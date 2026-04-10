@@ -131,16 +131,46 @@ export function createLoaderActions(set: SessionSet, get: SessionGet) {
         // UI-level pagination: initially show first PAGE_SIZE sessions
         const hasMore = newSessions.length > UI_PAGE_SIZE;
 
+        // Preserve child sessions from existing state
+        const existingChildSessions = existingSessions.filter((s) => s.parentID);
+
+        // Also load child sessions from API for the active session
+        const { activeSessionId } = get();
+        let apiChildSessions: Session[] = [];
+        if (activeSessionId) {
+          try {
+            const children = await client.getSessionChildren(activeSessionId);
+            apiChildSessions = children
+              .filter((c) => !c.time?.archived)
+              .map(convertSessionListItem);
+            if (apiChildSessions.length > 0) {
+              console.log("[Session] Loaded", apiChildSessions.length, "child sessions from API for active session:", activeSessionId);
+            }
+          } catch {
+            // Children endpoint may not be available, ignore
+          }
+        }
+
+        // Merge: root sessions + existing child sessions + API child sessions (deduplicated)
+        const childSessionIds = new Set(existingChildSessions.map((s) => s.id));
+        for (const apiChild of apiChildSessions) {
+          if (!childSessionIds.has(apiChild.id)) {
+            existingChildSessions.push(apiChild);
+            childSessionIds.add(apiChild.id);
+          }
+        }
+        const merged = [...newSessions, ...existingChildSessions];
+
         set({
-          sessions: newSessions,
+          sessions: merged,
           pinnedSessionIds,
           isLoading: false,
           hasMoreSessions: hasMore,
           visibleSessionCount: Math.min(newSessions.length, UI_PAGE_SIZE),
         });
 
-        // Update lookup cache after loading sessions
-        updateSessionCache(newSessions);
+        // Update lookup cache (include child sessions too)
+        updateSessionCache(merged);
       } catch (error) {
         set({
           error:
@@ -281,12 +311,13 @@ export function createLoaderActions(set: SessionSet, get: SessionGet) {
       try {
         const client = getOpenCodeClient();
 
-        // Fetch messages, session info, todos, and session-specific diffs in parallel
-        const [messages, sessionInfo, todosData, diffsData] = await Promise.all([
+        // Fetch messages, session info, todos, diffs, and child sessions in parallel
+        const [messages, sessionInfo, todosData, diffsData, childSessionsData] = await Promise.all([
           client.getMessages(id),
           client.getSession(id).catch(() => null),
           client.getTodos(id).catch(() => []),
           client.getSessionDiff(id).catch(() => []),
+          client.getSessionChildren(id).catch(() => []),
         ]);
 
         console.log("[Session] Session info:", sessionInfo);
@@ -424,9 +455,22 @@ export function createLoaderActions(set: SessionSet, get: SessionGet) {
             });
           }
 
-          const newSessions = state.sessions.map((s) =>
+          let newSessions = state.sessions.map((s) =>
             s.id === id ? { ...s, messages: sortedMerged } : s,
           );
+
+          // Merge API-loaded child sessions into the session list
+          if (childSessionsData.length > 0) {
+            const existingIds = new Set(newSessions.map((s) => s.id));
+            const apiChildren = childSessionsData
+              .filter((c) => !c.time?.archived && !existingIds.has(c.id))
+              .map(convertSessionListItem);
+            if (apiChildren.length > 0) {
+              console.log("[Session] Merged", apiChildren.length, "API child sessions for session:", id);
+              newSessions = [...newSessions, ...apiChildren];
+            }
+          }
+
           updateSessionCache(newSessions);
 
           const isStillActive = state.activeSessionId === id;

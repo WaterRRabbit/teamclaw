@@ -45,6 +45,31 @@ const p2pEngineStoreMocks = vi.hoisted(() => ({
   fetch: vi.fn(async () => {}),
 }))
 
+const sessionStoreMocks = vi.hoisted(() => ({
+  sessions: [
+    { id: 's1', title: 'Session One', updatedAt: new Date('2025-01-01'), messages: [] },
+    { id: 's2', title: 'Session Two', updatedAt: new Date('2025-01-02'), messages: [] },
+  ],
+  pinnedSessionIds: ['s1'],
+  importedSessionIds: [],
+  activeSessionId: 's1',
+  isLoading: false,
+  isLoadingMore: false,
+  hasMoreSessions: false,
+  visibleSessionCount: 50,
+  highlightedSessionIds: [],
+  pendingPermissions: [],
+  pendingQuestions: [],
+  setActiveSession: vi.fn(),
+  archiveSession: vi.fn(),
+  updateSessionTitle: vi.fn(),
+  toggleSessionPinned: vi.fn(),
+  loadMoreSessions: vi.fn(),
+  createSession: vi.fn(),
+  removeImportedSession: vi.fn(),
+  exportSession: vi.fn(),
+}))
+
 // Mock i18n
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -65,30 +90,7 @@ vi.mock('@/lib/date-format', () => ({
 // Mock stores
 vi.mock('@/stores/session', () => ({
   useSessionStore: (sel: (s: Record<string, unknown>) => unknown) =>
-    sel({
-      sessions: [
-        { id: 's1', title: 'Session One', updatedAt: new Date('2025-01-01'), messages: [] },
-        { id: 's2', title: 'Session Two', updatedAt: new Date('2025-01-02'), messages: [] },
-      ],
-      pinnedSessionIds: ['s1'],
-      importedSessionIds: [],
-      activeSessionId: 's1',
-      isLoading: false,
-      isLoadingMore: false,
-      hasMoreSessions: false,
-      visibleSessionCount: 50,
-      highlightedSessionIds: [],
-      pendingPermissions: [],
-      pendingQuestions: [],
-      setActiveSession: vi.fn(),
-      archiveSession: vi.fn(),
-      updateSessionTitle: vi.fn(),
-      toggleSessionPinned: vi.fn(),
-      loadMoreSessions: vi.fn(),
-      createSession: vi.fn(),
-      removeImportedSession: vi.fn(),
-      exportSession: vi.fn(),
-    }),
+    sel(sessionStoreMocks as unknown as Record<string, unknown>),
 }))
 
 vi.mock('@/stores/ui', () => ({
@@ -183,6 +185,15 @@ import { AppSidebar } from '@/components/app-sidebar'
 describe('AppSidebar', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    sessionStoreMocks.sessions = [
+      { id: 's1', title: 'Session One', updatedAt: new Date('2025-01-01'), messages: [] },
+      { id: 's2', title: 'Session Two', updatedAt: new Date('2025-01-02'), messages: [] },
+    ]
+    sessionStoreMocks.pinnedSessionIds = ['s1']
+    sessionStoreMocks.activeSessionId = 's1'
+    sessionStoreMocks.highlightedSessionIds = []
+    sessionStoreMocks.pendingPermissions = []
+    sessionStoreMocks.pendingQuestions = []
     uiVariantMocks.workspaceShell = false
     uiStoreMocks.embeddedSettingsSection = null
     uiStoreMocks.openSettings = vi.fn()
@@ -227,6 +238,25 @@ describe('AppSidebar', () => {
       sessionOneButton!.compareDocumentPosition(sessionTwoButton!) &
       Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
+  })
+
+  it('hides child sessions from the homepage sidebar session list', () => {
+    sessionStoreMocks.sessions = [
+      ...sessionStoreMocks.sessions,
+      {
+        id: 'child-1',
+        title: 'Child Session',
+        updatedAt: new Date('2025-01-03'),
+        messages: [],
+        parentID: 's1',
+      },
+    ]
+
+    render(<AppSidebar />)
+
+    expect(screen.queryByText('Child Session')).toBeNull()
+    expect(screen.getByText('Session One')).toBeDefined()
+    expect(screen.getByText('Session Two')).toBeDefined()
   })
 
   it('renders sidebar container', () => {

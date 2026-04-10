@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { MessageSquare, Loader2, Bot, CheckCircle2 } from 'lucide-react'
+import { MessageSquare, Loader2 } from 'lucide-react'
 import { useSessionStore } from '@/stores/session'
 import { useStreamingStore } from '@/stores/streaming'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -8,7 +8,6 @@ import { useUIStore } from '@/stores/ui'
 import { useCronStore } from '@/stores/cron'
 import { cn } from '@/lib/utils'
 import { formatRelativeDate } from '@/lib/date-format'
-import type { Session } from '@/stores/session-types'
 
 interface SessionListProps {
   compact?: boolean
@@ -111,61 +110,6 @@ const SessionListItem = React.memo(function SessionListItem({
   )
 })
 
-// ── Child session item ──
-
-interface ChildSessionItemProps {
-  session: Session
-  isViewing: boolean
-  compact?: boolean
-  onSelect: (id: string) => void
-}
-
-function ChildSessionStatusIcon({ sessionId, compact }: { sessionId: string; compact?: boolean }) {
-  const isStreaming = useStreamingStore(s => !!s.childSessionStreaming[sessionId]?.isStreaming)
-  const iconSize = compact ? 10 : 12
-
-  if (isStreaming) {
-    return <Loader2 size={iconSize} className="shrink-0 animate-spin text-muted-foreground" />
-  }
-  return <CheckCircle2 size={iconSize} className="shrink-0 text-foreground/40" />
-}
-
-const ChildSessionItem = React.memo(function ChildSessionItem({
-  session,
-  isViewing,
-  compact,
-  onSelect,
-}: ChildSessionItemProps) {
-  return (
-    <button
-      onClick={() => onSelect(session.id)}
-      className={cn(
-        "w-full text-left rounded-md transition-all duration-200 group",
-        compact ? "pl-8 pr-3 py-1.5" : "pl-9 pr-3 py-1.5",
-        isViewing
-          ? "bg-primary/8 text-foreground"
-          : "hover:bg-muted/50 text-muted-foreground hover:text-foreground"
-      )}
-    >
-      <div className="flex items-center gap-2 min-w-0">
-        <Bot className={cn(
-          "shrink-0",
-          compact ? "h-3 w-3" : "h-3.5 w-3.5",
-          isViewing ? "text-primary" : "text-muted-foreground/50 group-hover:text-muted-foreground/70",
-        )} />
-        <span className={cn(
-          "truncate flex-1 min-w-0",
-          compact ? "text-xs" : "text-[13px]",
-          isViewing && "font-medium",
-        )}>
-          {session.title || "Sub-agent"}
-        </span>
-        <ChildSessionStatusIcon sessionId={session.id} compact={compact} />
-      </div>
-    </button>
-  )
-})
-
 // ── Virtualization constants ──
 const VIRTUAL_THRESHOLD = 50
 const ROW_HEIGHT = 52
@@ -174,30 +118,16 @@ const ROW_HEIGHT_COMPACT = 40
 export function SessionList({ compact, onSessionSelected }: SessionListProps) {
   const allSessions = useSessionStore(s => s.sessions)
   const activeSessionId = useSessionStore(s => s.activeSessionId)
-  const viewingChildSessionId = useSessionStore(s => s.viewingChildSessionId)
   const cronSessionIds = useCronStore(s => s.cronSessionIds)
   const showCronSessions = useCronStore(s => s.showCronSessions)
 
-  const { parentSessions, childrenMap } = useMemo(() => {
-    const parents: Session[] = []
-    const children = new Map<string, Session[]>()
-
-    const filtered = allSessions.filter(s => showCronSessions
-      ? cronSessionIds.has(s.id)
-      : !cronSessionIds.has(s.id) || s.id === activeSessionId
-    )
-
-    for (const s of filtered) {
-      if (s.parentID) {
-        const list = children.get(s.parentID) || []
-        list.push(s)
-        children.set(s.parentID, list)
-      } else {
-        parents.push(s)
-      }
-    }
-
-    return { parentSessions: parents, childrenMap: children }
+  const parentSessions = useMemo(() => {
+    return allSessions.filter(s => {
+      if (s.parentID) return false
+      return showCronSessions
+        ? cronSessionIds.has(s.id)
+        : !cronSessionIds.has(s.id) || s.id === activeSessionId
+    })
   }, [allSessions, cronSessionIds, showCronSessions, activeSessionId])
 
   const isLoading = useSessionStore(s => s.isLoading)
@@ -230,11 +160,6 @@ export function SessionList({ compact, onSessionSelected }: SessionListProps) {
     onSessionSelected?.()
   }, [setFileModeRightTab, onSessionSelected])
 
-  const handleSelectChildSession = useCallback((childId: string) => {
-    useSessionStore.getState().setViewingChildSession(childId)
-    onSessionSelected?.()
-  }, [onSessionSelected])
-
   if (isLoading && parentSessions.length === 0) {
     return (
       <div className="flex items-center justify-center py-8">
@@ -252,24 +177,6 @@ export function SessionList({ compact, onSessionSelected }: SessionListProps) {
         <p className={cn("text-muted-foreground/70 font-medium", compact ? "text-xs" : "text-sm")}>
           No conversations yet
         </p>
-      </div>
-    )
-  }
-
-  const renderChildSessions = (parentId: string) => {
-    const children = childrenMap.get(parentId)
-    if (!children || children.length === 0) return null
-    return (
-      <div className="space-y-0.5 mt-0.5">
-        {children.map((child) => (
-          <ChildSessionItem
-            key={child.id}
-            session={child}
-            isViewing={viewingChildSessionId === child.id}
-            compact={compact}
-            onSelect={handleSelectChildSession}
-          />
-        ))}
       </div>
     )
   }
@@ -308,9 +215,7 @@ export function SessionList({ compact, onSessionSelected }: SessionListProps) {
                   isHighlighted={highlightedSessionIds.includes(session.id)}
                   compact={compact}
                   onSelect={handleSelectSession}
-                >
-                  {renderChildSessions(session.id)}
-                </SessionListItem>
+                />
               </div>
             )
           })}
@@ -329,9 +234,7 @@ export function SessionList({ compact, onSessionSelected }: SessionListProps) {
           isHighlighted={highlightedSessionIds.includes(session.id)}
           compact={compact}
           onSelect={handleSelectSession}
-        >
-          {renderChildSessions(session.id)}
-        </SessionListItem>
+        />
       ))}
     </div>
   )

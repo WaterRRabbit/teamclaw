@@ -67,6 +67,7 @@ export interface SessionUpdatedEvent {
   sessionId: string
   directory?: string
   title?: string
+  parentID?: string
 }
 
 // External message detected (message.updated for a message not in local state)
@@ -330,6 +331,10 @@ export class OpenCodeSSE {
     }
 
     if (OpenCodeSSE.debug()) console.log('[SSE] Event:', type, properties)
+
+    if (OpenCodeSSE.debug() && type.startsWith('session.')) {
+      console.log('[SSE] Session event:', type, JSON.stringify(properties).slice(0, 200))
+    }
 
     switch (type) {
       case 'server.connected':
@@ -617,9 +622,12 @@ export class OpenCodeSSE {
         }
         const createdSessionId = createdData.sessionID || createdData.info?.id
         const createdDir = createdData.info?.directory || (properties.directory as string | undefined)
-        const parentID = createdData.info?.parentID
+        const rawParentID = createdData.info?.parentID
+          || (properties.parentID as string | undefined)
+        // Normalize: null/empty string → undefined
+        const parentID = rawParentID && rawParentID !== 'null' ? rawParentID : undefined
 
-        if (OpenCodeSSE.debug()) console.log('[SSE] Session created:', createdSessionId)
+        if (OpenCodeSSE.debug()) console.log('[SSE] Session created:', createdSessionId, 'parentID:', parentID)
 
         if (createdSessionId) {
           this.handlers.onSessionCreated?.({
@@ -634,19 +642,21 @@ export class OpenCodeSSE {
       case 'session.updated': {
         const updatedData = properties as {
           sessionID?: string
-          info?: { id?: string; directory?: string; title?: string }
+          info?: { id?: string; directory?: string; title?: string; parentID?: string }
         }
         const updatedSessionId = updatedData.sessionID || updatedData.info?.id
         const updatedDir = updatedData.info?.directory || (properties.directory as string | undefined)
         const updatedTitle = updatedData.info?.title || (properties.title as string | undefined)
+        const updatedParentID = updatedData.info?.parentID || (properties.parentID as string | undefined)
 
-        if (OpenCodeSSE.debug()) console.log('[SSE] Session updated:', updatedSessionId)
+        if (OpenCodeSSE.debug()) console.log('[SSE] Session updated:', updatedSessionId, 'parentID:', updatedParentID)
 
         if (updatedSessionId) {
           this.handlers.onSessionUpdated?.({
             sessionId: updatedSessionId,
             directory: updatedDir,
             title: updatedTitle,
+            parentID: updatedParentID,
           })
         }
         break
