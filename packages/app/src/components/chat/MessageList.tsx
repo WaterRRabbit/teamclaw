@@ -594,6 +594,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                               <ErrorBoundary scope="Message" inline>
                                 <ChatMessage
                                   message={message}
+                                  activeSessionId={activeSessionId}
                                   basePath={activeSessionDirectory}
                                   shouldShowThinking={shouldShowThinking}
                                   showStarRating={
@@ -623,6 +624,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                         >
                           <ChatMessage
                             message={message}
+                            activeSessionId={activeSessionId}
                             basePath={activeSessionDirectory}
                             shouldShowThinking={shouldShowThinking}
                             showStarRating={

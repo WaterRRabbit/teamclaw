@@ -27,12 +27,14 @@ import { RetrievedChunksCard } from "./RetrievedChunksCard";
 /** Renders a single message with all its parts. Memoized to avoid re-renders when siblings change. */
 export const ChatMessage = React.memo(function ChatMessage({
   message,
+  activeSessionId,
   basePath,
   shouldShowThinking = true,
   showStarRating = false,
   tokenGroupInfo,
 }: {
   message: StoreMessage;
+  activeSessionId?: string | null;
   basePath?: string;
   shouldShowThinking?: boolean;
   showStarRating?: boolean;
@@ -49,35 +51,56 @@ export const ChatMessage = React.memo(function ChatMessage({
   // PERF: Only the streaming message subscribes to high-frequency updates (trigger/content).
   // Non-streaming messages subscribe to streamingMessageId only (changes ~2x per conversation).
   const streamingMessageId = useStreamingStore(s => s.streamingMessageId);
-  const isThisMessageStreaming = message.isStreaming && message.id === streamingMessageId;
+  const isViewingThisSession = !!activeSessionId && message.sessionId === activeSessionId;
+  const childStreamingState = useStreamingStore(s =>
+    message.isStreaming && isViewingThisSession && activeSessionId
+      ? s.childSessionStreaming[activeSessionId]
+      : undefined,
+  );
+  const isChildSessionStreaming =
+    message.isStreaming &&
+    isViewingThisSession &&
+    !!childStreamingState?.isStreaming;
+  const isThisMessageStreaming =
+    message.isStreaming &&
+    (message.id === streamingMessageId || isChildSessionStreaming);
 
   // Only subscribe to per-frame updates when THIS message is streaming.
   // This prevents all other ChatMessage instances from re-rendering every frame.
   const streamingContent = useStreamingStore(s =>
-    isThisMessageStreaming ? s.streamingContent : "",
+    isThisMessageStreaming && !isChildSessionStreaming ? s.streamingContent : "",
   );
   const streamingUpdateTrigger = useStreamingStore(s =>
-    isThisMessageStreaming ? s.streamingUpdateTrigger : 0,
+    isThisMessageStreaming && !isChildSessionStreaming ? s.streamingUpdateTrigger : 0,
   );
-  const activeSessionId = useSessionStore(s => s.activeSessionId);
+  const storeActiveSessionId = useSessionStore(s => s.activeSessionId);
+  const resolvedSessionId = activeSessionId ?? storeActiveSessionId;
 
   // When streaming, get the latest message data from sessionLookupCache
   // which includes updated reasoning parts from typewriterTick
   const latestMessage = React.useMemo(() => {
-    if (!isThisMessageStreaming || !activeSessionId) return message;
-    const session = getSessionById(activeSessionId);
+    if (!isThisMessageStreaming || !resolvedSessionId) return message;
+    const session = getSessionById(resolvedSessionId);
     if (!session) return message;
     const latest = session.messages.find(m => m.id === message.id);
     return latest || message;
-  }, [isThisMessageStreaming, activeSessionId, message, streamingUpdateTrigger]);
+  }, [isThisMessageStreaming, resolvedSessionId, message, streamingUpdateTrigger]);
 
-  const textContent = isThisMessageStreaming ? streamingContent : (latestMessage.content || "");
+  const textContent = isThisMessageStreaming
+    ? (isChildSessionStreaming ? (childStreamingState?.text || "") : streamingContent)
+    : (latestMessage.content || "");
 
   // Extract reasoning/thinking content from parts — memoized to avoid
   // re-filtering on every render during streaming.
   const { reasoningContent, hasReasoning, hasThinking } = React.useMemo(() => {
     const rParts = latestMessage.parts.filter((p) => p.type === "reasoning");
-    const rContent = rParts.map((p) => p.text || "").filter(Boolean).join("\n");
+    const streamedReasoning = isChildSessionStreaming
+      ? (childStreamingState?.reasoning || "")
+      : "";
+    const rContent = [
+      rParts.map((p) => p.text || "").filter(Boolean).join("\n"),
+      streamedReasoning,
+    ].filter(Boolean).join("\n");
     return {
       reasoningContent: rContent,
       hasReasoning: rContent.length > 0,
@@ -85,7 +108,7 @@ export const ChatMessage = React.memo(function ChatMessage({
         (p) => p.type === "step-start" || p.type === "step-finish",
       ),
     };
-  }, [latestMessage.parts]);
+  }, [childStreamingState?.reasoning, isChildSessionStreaming, latestMessage.parts]);
 
   const hasToolCalls = latestMessage.toolCalls && latestMessage.toolCalls.length > 0;
 

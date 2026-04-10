@@ -189,4 +189,31 @@ describe('ChatMessage streaming typewriter', () => {
     const dots = container.querySelectorAll('[class*="animate-"]');
     expect(dots.length).toBeGreaterThanOrEqual(3);
   });
+
+  it('displays child session streaming content while viewing a child session', async () => {
+    const ChatMessage = await importChatMessage();
+
+    const message = makeMessage({
+      sessionId: 'child-1',
+      isStreaming: true,
+      content: '',
+    });
+
+    useStreamingStore.setState({
+      childSessionStreaming: {
+        'child-1': {
+          sessionId: 'child-1',
+          text: 'Child stream in progress',
+          reasoning: '',
+          isStreaming: true,
+        },
+      },
+    });
+
+    const { container } = render(
+      <ChatMessage message={message} activeSessionId="child-1" />
+    );
+
+    expect(container.textContent).toContain('Child stream in progress');
+  });
 });

@@ -104,6 +104,44 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     viewingChildSessionId ? s.childSessionStreaming[viewingChildSessionId] : undefined
   );
   const isViewingChild = !!viewingChildSessionId;
+  const displayedChildSessionMessages = React.useMemo(() => {
+    if (!viewingChildSessionId) return EMPTY_MESSAGES;
+
+    const hasLiveChildStreaming =
+      !!childStreamingContent &&
+      (childStreamingContent.isStreaming ||
+        !!childStreamingContent.text ||
+        !!childStreamingContent.reasoning);
+
+    if (!hasLiveChildStreaming) {
+      return childSessionMessages;
+    }
+
+    const hasStreamingPlaceholder = childSessionMessages.some((message) => message.isStreaming);
+    if (hasStreamingPlaceholder) {
+      return childSessionMessages;
+    }
+
+    const lastTimestamp = childSessionMessages[childSessionMessages.length - 1]?.timestamp;
+    const placeholderTimestamp =
+      lastTimestamp instanceof Date
+        ? new Date(lastTimestamp.getTime() + 1)
+        : new Date();
+
+    return [
+      ...childSessionMessages,
+      {
+        id: `child-streaming-${viewingChildSessionId}`,
+        sessionId: viewingChildSessionId,
+        role: "assistant" as const,
+        content: childStreamingContent?.text || "",
+        parts: [],
+        toolCalls: [],
+        isStreaming: true,
+        timestamp: placeholderTimestamp,
+      },
+    ];
+  }, [childSessionMessages, childStreamingContent, viewingChildSessionId]);
 
   // Actions — accessed via getState() to avoid creating subscriptions.
   // Zustand actions are stable references; subscribing to them wastes equality checks.
@@ -780,7 +818,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
           ) : (
             <MessageList
               ref={messageListRef}
-              messages={childSessionMessages}
+              messages={displayedChildSessionMessages}
               activeSessionId={viewingChildSessionId}
               isStreaming={!!childStreamingContent?.isStreaming}
               streamingMessageId={null}

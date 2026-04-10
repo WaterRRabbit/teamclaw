@@ -121,3 +121,5 @@ sre/
 
 # TeamClaw system directories
 .ac360/
+
+build.config.json
