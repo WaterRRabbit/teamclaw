@@ -31,6 +31,7 @@ pub mod version_commands;
 pub mod version_store;
 pub mod version_types;
 pub mod webview;
+pub mod workspace_files;
 
 /// The short application name, injected at compile time via `build.rs`.
 #[allow(dead_code)]

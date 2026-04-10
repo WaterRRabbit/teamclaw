@@ -494,8 +494,8 @@ export function FileTree({
         const node = findNode(currentFileTree, filePath);
         const isDir = node?.type === "directory";
         // Backup content for undo (text files only)
-        if (!isDir) {
-          const content = await readFileContent(filePath);
+        if (!isDir && workspacePath) {
+          const content = await readFileContent(workspacePath, filePath);
           if (content !== undefined) {
             pushUndo({
               type: 'delete',
@@ -515,8 +515,8 @@ export function FileTree({
       }
     } else {
       // Backup for undo
-      if (!deleteConfirm.isDirectory) {
-        const content = await readFileContent(deleteConfirm.path);
+      if (!deleteConfirm.isDirectory && workspacePath) {
+        const content = await readFileContent(workspacePath, deleteConfirm.path);
         if (content !== undefined) {
           pushUndo({
             type: 'delete',

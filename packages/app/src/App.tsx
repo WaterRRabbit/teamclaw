@@ -623,12 +623,14 @@ function AppContent() {
   }, [leftDockActive, sidebarOpen, setSidebarOpen, closePanel]);
 
   // Remove HTML skeleton once OpenCode server is bootstrapped (sessions can load)
+  // Also remove when workspace resolution completes with no workspace — otherwise
+  // the skeleton (z-index:9999) covers the WorkspacePrompt indefinitely.
   const openCodeBootstrapped = useWorkspaceStore((s) => s.openCodeBootstrapped);
   useEffect(() => {
-    if (openCodeBootstrapped || !isTauri()) {
+    if (openCodeBootstrapped || !isTauri() || (initialWorkspaceResolved && !workspacePath)) {
       document.getElementById('skeleton')?.remove();
     }
-  }, [openCodeBootstrapped]);
+  }, [openCodeBootstrapped, initialWorkspaceResolved, workspacePath]);
 
   // If settings is open, show settings page (check first so it works regardless of workspace state)
   if (currentView === "settings") {

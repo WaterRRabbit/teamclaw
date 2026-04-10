@@ -178,13 +178,29 @@ export async function duplicateItem(sourcePath: string): Promise<boolean> {
   return copyItem(sourcePath, parentDir);
 }
 
+function isFsScopeError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('forbidden path:');
+}
+
 /** Read file content for undo backup (text files only) */
-export async function readFileContent(path: string): Promise<string | undefined> {
+export async function readFileContent(
+  workspacePath: string,
+  path: string,
+): Promise<string | undefined> {
   if (!isTauri()) return undefined;
   try {
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     return await readTextFile(path);
-  } catch {
-    return undefined; // Binary or unreadable
+  } catch (error) {
+    if (!isFsScopeError(error)) {
+      return undefined; // Binary or unreadable
+    }
+
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await invoke<string>("read_workspace_text_file", { workspacePath, path });
+    } catch {
+      return undefined;
+    }
   }
 }

@@ -1902,6 +1902,13 @@ fn write_last_workspace(workspace_path: &str) {
     );
 }
 
+/// Remove the persisted last-workspace so the next launch shows the workspace picker.
+#[tauri::command]
+pub fn clear_last_workspace() {
+    let path = last_workspace_path();
+    let _ = std::fs::remove_file(&path);
+}
+
 /// Get OpenCode server status
 #[tauri::command]
 pub async fn get_opencode_status(

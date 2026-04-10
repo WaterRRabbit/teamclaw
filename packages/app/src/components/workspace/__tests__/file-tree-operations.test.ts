@@ -24,6 +24,7 @@ const mockReadDir = vi.fn().mockRejectedValue(new Error('not a dir'));
 const mockReadFile = vi.fn().mockResolvedValue(new Uint8Array([72, 105]));
 const mockWriteFile = vi.fn().mockResolvedValue(undefined);
 const mockReadTextFile = vi.fn().mockResolvedValue('file content');
+const mockInvoke = vi.fn();
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
   writeTextFile: (...args: unknown[]) => mockWriteTextFile(...args),
@@ -35,6 +36,10 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   readFile: (...args: unknown[]) => mockReadFile(...args),
   writeFile: (...args: unknown[]) => mockWriteFile(...args),
   readTextFile: (...args: unknown[]) => mockReadTextFile(...args),
+}));
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
 
 vi.mock('@/lib/utils', () => ({
@@ -59,6 +64,7 @@ describe('file-tree-operations', () => {
     mockReadDir.mockRejectedValue(new Error('not a dir'));
     mockReadFile.mockResolvedValue(new Uint8Array([72, 105]));
     mockReadTextFile.mockResolvedValue('file content');
+    mockInvoke.mockReset();
   });
 
   // ── createNewFile ────────────────────────────────────────────────────
@@ -257,15 +263,30 @@ describe('file-tree-operations', () => {
 
   describe('readFileContent', () => {
     it('reads text file content', async () => {
-      const content = await readFileContent('/workspace/hello.ts');
+      const content = await readFileContent('/workspace', '/workspace/hello.ts');
       expect(content).toBe('file content');
       expect(mockReadTextFile).toHaveBeenCalledWith('/workspace/hello.ts');
     });
 
     it('returns undefined for binary/unreadable files', async () => {
       mockReadTextFile.mockRejectedValueOnce(new Error('binary'));
-      const content = await readFileContent('/workspace/image.png');
+      const content = await readFileContent('/workspace', '/workspace/image.png');
       expect(content).toBeUndefined();
+    });
+
+    it('falls back to backend workspace reader when fs scope rejects the path', async () => {
+      mockReadTextFile.mockRejectedValueOnce(
+        new Error('forbidden path: /Users/weigan.huang/ws/ac360-team'),
+      );
+      mockInvoke.mockResolvedValueOnce('linked file content');
+
+      const content = await readFileContent('/workspace', '/workspace/ac360-link/README.md');
+
+      expect(mockInvoke).toHaveBeenCalledWith('read_workspace_text_file', {
+        workspacePath: '/workspace',
+        path: '/workspace/ac360-link/README.md',
+      });
+      expect(content).toBe('linked file content');
     });
   });
 });

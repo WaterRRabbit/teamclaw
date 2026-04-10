@@ -163,6 +163,23 @@ function getFolderName(path: string): string {
 
 export const WORKSPACE_STORAGE_KEY = `${appShortName}-workspace-path`;
 
+async function readWorkspaceTextFile(
+  workspacePath: string,
+  path: string,
+): Promise<string> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("read_workspace_text_file", { workspacePath, path });
+}
+
+async function readWorkspaceBinaryFile(
+  workspacePath: string,
+  path: string,
+): Promise<Uint8Array> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const bytes = await invoke<number[]>("read_workspace_binary_file", { workspacePath, path });
+  return new Uint8Array(bytes);
+}
+
 // Update only the target node's children, creating new references only along
 // the path from root to target. Siblings and unrelated subtrees keep their
 // original references, preserving React.memo effectiveness.
@@ -441,11 +458,17 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       // Ignore if contacts store not available
     }
 
-    // Remove persisted workspace path
+    // Remove persisted workspace path (frontend localStorage + Rust last-workspace.json)
     try {
       localStorage.removeItem(WORKSPACE_STORAGE_KEY);
     } catch {
       /* ignore storage errors */
+    }
+    if (isTauri()) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("clear_last_workspace");
+      } catch { /* ignore */ }
     }
 
     // Reset team mode state
@@ -514,35 +537,51 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
 
     try {
-      const { readDir } = await import("@tauri-apps/plugin-fs");
+      const { readDir, stat } = await import("@tauri-apps/plugin-fs");
       const fullPath = path === "." ? workspacePath : path;
       console.log("[Workspace] Loading directory:", fullPath);
       const entries = await readDir(fullPath);
       console.log("[Workspace] Found", entries.length, "entries");
 
-      const nodes: FileNode[] = entries
-        .filter(entry => useTeamModeStore.getState().devUnlocked || !HIDDEN_DIRECTORIES.has(entry.name))
-        .map(
-          (entry) =>
-            ({
-              name: entry.name,
-              path: `${fullPath}/${entry.name}`,
-              type: entry.isDirectory ? "directory" : "file",
-            }) as FileNode,
-        )
-        .sort((a, b) => {
-          // Always put teamclaw-team first
-          if (a.name === TEAM_REPO_DIR && b.name !== TEAM_REPO_DIR) return -1;
-          if (b.name === TEAM_REPO_DIR && a.name !== TEAM_REPO_DIR) return 1;
-          
-          // Then directories before files
-          if (a.type !== b.type) {
-            return a.type === "directory" ? -1 : 1;
+      const visibleEntries = entries.filter(
+        (entry) =>
+          useTeamModeStore.getState().devUnlocked || !HIDDEN_DIRECTORIES.has(entry.name),
+      );
+
+      const nodes: FileNode[] = await Promise.all(
+        visibleEntries.map(async (entry) => {
+          const entryPath = `${fullPath}/${entry.name}`;
+          let isDirectory = entry.isDirectory;
+
+          if (!isDirectory && entry.isSymlink) {
+            try {
+              isDirectory = (await stat(entryPath)).isDirectory;
+            } catch (error) {
+              console.warn("[Workspace] Failed to resolve symlink target:", entryPath, error);
+            }
           }
-          
-          // Then alphabetical
-          return a.name.localeCompare(b.name);
-        });
+
+          return {
+            name: entry.name,
+            path: entryPath,
+            type: isDirectory ? "directory" : "file",
+          } as FileNode;
+        }),
+      );
+
+      nodes.sort((a, b) => {
+        // Always put teamclaw-team first
+        if (a.name === TEAM_REPO_DIR && b.name !== TEAM_REPO_DIR) return -1;
+        if (b.name === TEAM_REPO_DIR && a.name !== TEAM_REPO_DIR) return 1;
+        
+        // Then directories before files
+        if (a.type !== b.type) {
+          return a.type === "directory" ? -1 : 1;
+        }
+        
+        // Then alphabetical
+        return a.name.localeCompare(b.name);
+      });
 
       return nodes;
     } catch (error) {
@@ -709,6 +748,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   // Select and load a file using Tauri FS plugin
   selectFile: async (path: string, line?: number, heading?: string) => {
+    const workspacePath = get().workspacePath;
+
     // Update both single and multi-select state for backward compatibility
     set({
       selectedFile: path,
@@ -751,9 +792,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         // The viewer will detect the file type from filename and show an appropriate message
         set({ fileContent: "", isLoadingFile: false });
       } else if (isPreviewableBinary) {
-        // For images/PDFs, read as bytes and convert to base64
-        const { readFile } = await import("@tauri-apps/plugin-fs");
-        const bytes = await readFile(path);
+        if (!workspacePath) {
+          throw new Error("No workspace path set");
+        }
+        const bytes = await readWorkspaceBinaryFile(workspacePath, path);
 
         // Convert to base64
         let binary = "";
@@ -783,9 +825,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           isLoadingFile: false,
         });
       } else {
-        // For text files, read as text
-        const { readTextFile } = await import("@tauri-apps/plugin-fs");
-        const content = await readTextFile(path);
+        if (!workspacePath) {
+          throw new Error("No workspace path set");
+        }
+        const content = await readWorkspaceTextFile(workspacePath, path);
         set({ fileContent: content, isLoadingFile: false });
       }
     } catch (error) {
@@ -801,8 +844,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   // Unlike selectFile, this does NOT set fileContent: null or isLoadingFile: true,
   // so the editor stays mounted and can apply the change incrementally.
   reloadSelectedFile: async () => {
-    const { selectedFile } = get();
-    if (!selectedFile) return;
+    const { selectedFile, workspacePath } = get();
+    if (!selectedFile || !workspacePath) return;
 
     // In web mode, nothing to reload
     if (!isTauri()) return;
@@ -827,8 +870,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         await selectFile(selectedFile);
       } else {
         // Text files: just re-read content and update — no unmount cycle
-        const { readTextFile } = await import("@tauri-apps/plugin-fs");
-        const content = await readTextFile(selectedFile);
+        const content = await readWorkspaceTextFile(workspacePath, selectedFile);
         set({ fileContent: content });
       }
     } catch (error) {
