@@ -107,7 +107,7 @@ jobs:
             DEVELOPMENT_TEAM=43G5A6G9QV \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Apple Distribution" \
-            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            PROVISIONING_PROFILE="$PROFILE_UUID" \
             PRODUCT_BUNDLE_IDENTIFIER=tech.teamclaw.mobile
 
       # ── Export IPA ──
