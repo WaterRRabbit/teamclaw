@@ -83,6 +83,9 @@ jobs:
             ./src-tauri -> target
           key: ${{ matrix.target }}
 
+      - name: Install protoc (for prost_build)
+        run: brew install protobuf
+
       # Parallel: pnpm install + frontend build, opencode download, certificate import
       - name: Build all (parallel)
         env:
@@ -261,6 +264,10 @@ jobs:
         with:
           workspaces: |
             ./src-tauri -> target
+
+      - name: Install protoc (for prost_build)
+        shell: bash
+        run: choco install protoc -y
 
       - name: Install dependencies and build frontend
         env:
