@@ -10,6 +10,10 @@ global.ResizeObserver = class ResizeObserver {
   disconnect() {}
 };
 
+if (!HTMLElement.prototype.scrollTo) {
+  HTMLElement.prototype.scrollTo = () => {};
+}
+
 // ── Mocks ──────────────────────────────────────────────────────────────
 
 vi.mock('react-i18next', () => ({
@@ -44,6 +48,9 @@ vi.mock('@tauri-apps/api/window', () => ({
 // Session store state — mutated per test
 const sessionState = {
   activeSessionId: null as string | null,
+  viewingChildSessionId: null as string | null,
+  childSessionMessages: {} as Record<string, unknown[]>,
+  isLoadingChildMessages: false,
   sessions: [] as unknown[],
   error: null as string | null,
   isConnected: true,
@@ -199,6 +206,9 @@ describe('ChatPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sessionState.activeSessionId = null;
+    sessionState.viewingChildSessionId = null;
+    sessionState.childSessionMessages = {};
+    sessionState.isLoadingChildMessages = false;
     sessionState.isConnected = true;
     sessionState.error = null;
     sessionState.sessionError = null;
@@ -206,6 +216,7 @@ describe('ChatPanel', () => {
     sessionState.messageQueue = [];
     sessionState.sessions = [];
     streamingState.streamingMessageId = null;
+    streamingState.childSessionStreaming = {};
     workspaceState.openCodeReady = true;
     voiceInputState.registerInsertToChatHandler = vi.fn(() => () => {});
     sessionState.loadSessions = vi.fn(() => Promise.resolve());
@@ -238,5 +249,26 @@ describe('ChatPanel', () => {
     const { container } = render(<ChatPanel />);
     // When isConnected is false and there's an active session, the connecting indicator shows
     expect(container.textContent).toContain('Connecting');
+  });
+
+  it('renders streaming child session content before child messages finish loading', () => {
+    sessionState.activeSessionId = 'sess-parent';
+    sessionState.viewingChildSessionId = 'child-1';
+    sessionState.childSessionMessages = {
+      'child-1': [],
+    };
+    streamingState.childSessionStreaming = {
+      'child-1': {
+        sessionId: 'child-1',
+        text: 'Child stream in progress',
+        reasoning: '',
+        isStreaming: true,
+      },
+    };
+
+    const { container } = render(<ChatPanel />);
+
+    expect(container.textContent).toContain('Child stream in progress');
+    expect(container.textContent).toContain('返回主会话');
   });
 });
