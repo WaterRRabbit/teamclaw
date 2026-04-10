@@ -10,6 +10,12 @@ vi.mock('@/lib/notification-service', () => ({
 
 vi.mock('@/lib/opencode/sdk-types', () => ({}))
 
+vi.mock('@/lib/opencode/sdk-client', () => ({
+  getOpenCodeClient: () => ({
+    getSession: vi.fn(() => Promise.resolve(null)),
+  }),
+}))
+
 vi.mock('@/lib/opencode/sdk-sse', () => ({
   registerChildSession: vi.fn(),
   isChildSession: vi.fn(() => false),
@@ -98,6 +104,8 @@ describe('session-sse-lifecycle-handlers', () => {
       sessions: [],
       highlightedSessionIds: [],
       messageQueue: [],
+      pendingQuestions: [],
+      pendingPermissions: [],
       sendMessage: vi.fn(),
       setActiveSession: vi.fn(),
     }
@@ -122,12 +130,15 @@ describe('session-sse-lifecycle-handlers', () => {
     expect(selfCreatedSessionIds.has('sess-new')).toBe(false)
   })
 
-  it('handleSessionCreated triggers refresh for external sessions', () => {
+  it('handleSessionCreated triggers refresh for external sessions', async () => {
     handlers.handleSessionCreated({
       sessionId: 'sess-ext',
       type: 'session.created',
     } as any)
-    expect(debouncedRefreshSessions).toHaveBeenCalled()
+    // Wait for the async API check to resolve
+    await vi.waitFor(() => {
+      expect(debouncedRefreshSessions).toHaveBeenCalled()
+    })
     expect(state.highlightedSessionIds).toContain('sess-ext')
   })
 
@@ -138,12 +149,14 @@ describe('session-sse-lifecycle-handlers', () => {
 
   it('handleSessionIdle preserves streaming when pendingQuestion exists', () => {
     state.activeSessionId = 'sess-1'
-    state.pendingQuestion = {
-      questionId: 'q-1',
-      toolCallId: 'tc-1',
-      messageId: 'msg-1',
-      questions: [],
-    }
+    state.pendingQuestions = [
+      {
+        questionId: 'q-1',
+        toolCallId: 'tc-1',
+        messageId: 'msg-1',
+        questions: [],
+      },
+    ]
     useStreamingStore.setState({ streamingMessageId: 'msg-1' })
 
     const clearStreamingSpy = vi.spyOn(useStreamingStore.getState(), 'clearStreaming')
@@ -156,12 +169,17 @@ describe('session-sse-lifecycle-handlers', () => {
 
   it('handleSessionIdle preserves streaming when pendingPermission exists', () => {
     state.activeSessionId = 'sess-1'
-    state.pendingPermission = {
-      id: 'perm-1',
-      action: 'write',
-      resource: '/test',
-      reason: 'test',
-    }
+    state.pendingPermissions = [
+      {
+        permission: {
+          id: 'perm-1',
+          sessionID: 'sess-1',
+          permission: 'write',
+          patterns: ['/test'],
+        },
+        childSessionId: null,
+      },
+    ]
     useStreamingStore.setState({ streamingMessageId: 'msg-1' })
 
     const clearStreamingSpy = vi.spyOn(useStreamingStore.getState(), 'clearStreaming')
@@ -174,8 +192,8 @@ describe('session-sse-lifecycle-handlers', () => {
 
   it('handleSessionIdle preserves streaming when buffer has content', async () => {
     state.activeSessionId = 'sess-1'
-    state.pendingQuestion = null
-    state.pendingPermission = null
+    state.pendingQuestions = []
+    state.pendingPermissions = []
     useStreamingStore.setState({ streamingMessageId: 'msg-1' })
     sessionLookupCache.set('sess-1', {
       id: 'sess-1',
@@ -196,8 +214,8 @@ describe('session-sse-lifecycle-handlers', () => {
 
   it('handleSessionIdle clears streaming when buffer is empty', async () => {
     state.activeSessionId = 'sess-1'
-    state.pendingQuestion = null
-    state.pendingPermission = null
+    state.pendingQuestions = []
+    state.pendingPermissions = []
     useStreamingStore.setState({ streamingMessageId: 'msg-1' })
     sessionLookupCache.set('sess-1', {
       id: 'sess-1',

@@ -65,11 +65,11 @@ const WORKSPACE_QUICK_SECTIONS: {
 // Status indicator for the active session in the sidebar
 function SidebarSessionStatusIndicator() {
   const sessionStatus = useSessionStore(s => s.sessionStatus)
-  const pendingPermission = useSessionStore(s => s.pendingPermission)
-  const pendingQuestion = useSessionStore(s => s.pendingQuestion)
+  const pendingPermissions = useSessionStore(s => s.pendingPermissions)
+  const pendingQuestions = useSessionStore(s => s.pendingQuestions)
   const streamingMessageId = useStreamingStore(s => s.streamingMessageId)
 
-  if (pendingPermission || pendingQuestion) {
+  if (pendingPermissions.length > 0 || pendingQuestions.length > 0) {
     return (
       <span className="shrink-0 text-[10px] font-medium text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded-full">
         等待确认
@@ -502,6 +502,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   // UI-level pagination: filter by cron toggle, then slice to visible count
   const sessions = React.useMemo(
     () => allSessions
+      .filter(s => !s.parentID)
       .filter(s => showCronSessions
         ? cronSessionIds.has(s.id)
         : !cronSessionIds.has(s.id)

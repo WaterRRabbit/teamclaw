@@ -261,19 +261,12 @@ export function TaskToolCard({ toolCall }: { toolCall: ToolCall }) {
 
     // Clean up all backend metadata tags
     cleanedResult = cleanedResult
-      // Remove <task_id>...</task_id>
       .replace(/<task_id>[\s\S]*?<\/task_id>/g, "")
-      // Remove <task_result>...</task_result> but keep the content inside
       .replace(/<task_result>([\s\S]*?)<\/task_result>/g, "$1")
-      // Remove <session>...</session>
       .replace(/<session>[\s\S]*?<\/session>/g, "")
-      // Remove task_id: xxx (with or without underscore, keep content after space)
       .replace(/\b_?task_id:\s*\S+\s*/g, "")
-      // Remove session_id: xxx
       .replace(/\bsession_id:\s*\S+\s*/g, "")
-      // Remove "for resuming to continue this task if needed" text
       .replace(/\(for resuming to continue this task if needed\)/g, "")
-      // Clean up extra whitespace and empty lines
       .replace(/^\s*[\r\n]/gm, "")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
@@ -301,6 +294,12 @@ export function TaskToolCard({ toolCall }: { toolCall: ToolCall }) {
 
   const description = args?.description || "Subagent Task";
   const subagentType = args?.subagent_type || "explore";
+
+  const openChildSession = useCallback(() => {
+    if (sessionId) {
+      useSessionStore.getState().setViewingChildSession(sessionId);
+    }
+  }, [sessionId]);
 
   const markdownClasses =
     "prose prose-sm max-w-none text-xs text-foreground/90 prose-headings:text-foreground prose-headings:text-sm prose-headings:font-semibold prose-headings:my-1 prose-p:text-foreground/80 prose-p:my-1 prose-strong:text-foreground prose-code:text-foreground prose-code:text-[11px] prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-muted prose-pre:text-foreground prose-pre:text-[11px] prose-ul:text-foreground/80 prose-ul:my-1 prose-ol:text-foreground/80 prose-ol:my-1 prose-li:text-foreground/80 prose-li:my-0";
@@ -343,7 +342,6 @@ export function TaskToolCard({ toolCall }: { toolCall: ToolCall }) {
 
   return (
     <div className="border-l-2 border-border pl-3 py-1 space-y-2">
-      {/* Subagent header */}
       <div className="flex items-center gap-2 text-[11px]">
         <Bot size={12} className="text-muted-foreground" />
         <span className="text-foreground font-medium">@{subagentType}</span>
@@ -355,13 +353,22 @@ export function TaskToolCard({ toolCall }: { toolCall: ToolCall }) {
               : `${(toolCall.duration / 1000).toFixed(1)}s`}
           </span>
         )}
+        {sessionId && (
+          <button
+            type="button"
+            onClick={openChildSession}
+            className="rounded border border-border bg-background/70 px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            title="打开子会话"
+          >
+            查看会话
+          </button>
+        )}
         <StatusIcon
           size={12}
           className={cn(config.textColor, config.animate && "animate-spin")}
         />
       </div>
 
-      {/* Running state - tool activity + streaming content */}
       {toolCall.status === "calling" && (
         <div className="space-y-1">
           {toolCall.metadata?.summary &&
@@ -437,7 +444,6 @@ export function TaskToolCard({ toolCall }: { toolCall: ToolCall }) {
             </>
           ) : null}
 
-          {/* Streaming content from child session */}
           {streamingText ? (
             <div
               ref={streamingRef}
@@ -459,7 +465,6 @@ export function TaskToolCard({ toolCall }: { toolCall: ToolCall }) {
         </div>
       )}
 
-      {/* Final output */}
       {output && (
         <div className="max-h-64 overflow-y-auto border-t border-border/30 pt-1 mt-1">
           <div className={markdownClasses}>
@@ -468,7 +473,6 @@ export function TaskToolCard({ toolCall }: { toolCall: ToolCall }) {
         </div>
       )}
 
-      {/* Subagent Tool Details - expandable, only when sessionId exists */}
       {sessionId && (
         <SubagentToolDetails sessionId={sessionId} />
       )}
@@ -476,7 +480,6 @@ export function TaskToolCard({ toolCall }: { toolCall: ToolCall }) {
   );
 }
 
-// Cache for child session tool calls to avoid repeated fetches
 const childSessionToolCache = new Map<
   string,
   { toolCalls: ToolCall[]; fetchedAt: number }

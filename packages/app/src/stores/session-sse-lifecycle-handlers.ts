@@ -62,6 +62,54 @@ const clearRetryTimeout = () => {
 type SessionSet = (fn: ((state: SessionState) => Partial<SessionState>) | Partial<SessionState>) => void;
 type SessionGet = () => SessionState;
 
+// Shared helper: add a child session to the store and set up streaming if needed
+function addChildSession(
+  set: SessionSet,
+  _get: SessionGet,
+  sessionId: string,
+  parentID: string,
+  activeSessionId: string | null,
+  title?: string,
+) {
+  set((state) => {
+    const exists = state.sessions.some((s) => s.id === sessionId);
+    if (exists) {
+      // Backfill parentID if missing
+      const session = state.sessions.find((s) => s.id === sessionId);
+      if (session && !session.parentID) {
+        return {
+          sessions: state.sessions.map((s) =>
+            s.id === sessionId ? { ...s, parentID, ...(title ? { title } : {}) } : s,
+          ),
+        };
+      }
+      return {};
+    }
+    return {
+      sessions: [...state.sessions, {
+        id: sessionId,
+        title: title || "Sub-agent",
+        messages: [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        parentID,
+      }],
+    };
+  });
+
+  // Set up streaming tracking for children of the active session
+  if (parentID === activeSessionId && !isChildSession(sessionId)) {
+    registerChildSession(sessionId);
+    childStreamingBuffers.set(sessionId, { text: "", reasoning: "" });
+    useStreamingStore.getState().setChildStreaming(sessionId, {
+      sessionId,
+      text: "",
+      reasoning: "",
+      isStreaming: true,
+    });
+  }
+}
+
 export function createLifecycleHandlers(set: SessionSet, get: SessionGet) {
   return {
     // Handle session.created SSE event (global)
@@ -69,91 +117,127 @@ export function createLifecycleHandlers(set: SessionSet, get: SessionGet) {
       const { activeSessionId } = get();
       const workspacePath = useWorkspaceStore.getState().workspacePath;
 
-      if (event.parentID && event.parentID === activeSessionId) {
-        console.log("[Session] Child session detected:", event.sessionId, "parent:", event.parentID);
-        registerChildSession(event.sessionId);
-        const buffer = { text: "", reasoning: "" };
-        childStreamingBuffers.set(event.sessionId, buffer);
-        useStreamingStore.getState().setChildStreaming(event.sessionId, {
-          sessionId: event.sessionId,
-          text: "",
-          reasoning: "",
-          isStreaming: true,
-        });
-        return;
-      }
-
       if (selfCreatedSessionIds.has(event.sessionId)) {
         console.log("[Session] Ignoring SSE for self-created session:", event.sessionId);
         selfCreatedSessionIds.delete(event.sessionId);
         return;
       }
 
-      console.log("[Session] Session created externally:", event.sessionId);
-
       if (event.directory && workspacePath) {
         if (!workspacePathsMatch(event.directory, workspacePath)) {
-          console.log("[Session] Ignoring session from different workspace:", event.directory);
           return;
         }
       }
 
-      // Refresh cron session IDs so newly created cron sessions get filtered
-      import("@/stores/cron").then(({ useCronStore }) => {
-        useCronStore.getState().loadCronSessionIds();
+      // If parentID is known from SSE, handle immediately as child session
+      if (event.parentID) {
+        addChildSession(set, get, event.sessionId, event.parentID, activeSessionId);
+        return;
+      }
+
+      // parentID may be absent from SSE (OpenCode v1.2.x timing issue).
+      // Fetch session info from API to check before adding to the session list.
+      getOpenCodeClient().getSession(event.sessionId).then((sessionInfo) => {
+        if (sessionInfo?.parentID) {
+          addChildSession(set, get, event.sessionId, sessionInfo.parentID, get().activeSessionId, sessionInfo.title);
+        } else {
+          // Confirmed root session — add to list
+          import("@/stores/cron").then(({ useCronStore }) => {
+            useCronStore.getState().loadCronSessionIds();
+          });
+
+          set((state) => ({
+            highlightedSessionIds: [...state.highlightedSessionIds, event.sessionId],
+          }));
+          setTimeout(() => {
+            import("./session-store").then(({ useSessionStore }) => {
+              useSessionStore.getState().clearHighlightedSession(event.sessionId);
+            });
+          }, 5000);
+
+          debouncedRefreshSessions();
+        }
+      }).catch(() => {
+        // API unavailable — fall back to treating as root session
+        debouncedRefreshSessions();
       });
-
-      set((state) => ({
-        highlightedSessionIds: [...state.highlightedSessionIds, event.sessionId],
-      }));
-      setTimeout(() => {
-        // Use dynamic import to avoid circular reference
-        import("./session-store").then(({ useSessionStore }) => {
-          useSessionStore.getState().clearHighlightedSession(event.sessionId);
-        });
-      }, 5000);
-
-      console.log("[Session] About to refresh session list. Active session:", activeSessionId, "New session:", event.sessionId);
-      debouncedRefreshSessions();
     },
 
     // Handle session.updated SSE event (global)
     handleSessionUpdated: (event: SessionUpdatedEvent) => {
       if (selfCreatedSessionIds.has(event.sessionId)) {
-        console.log("[Session] Ignoring SSE update for self-created session:", event.sessionId);
         selfCreatedSessionIds.delete(event.sessionId);
         return;
       }
 
-      if (isChildSession(event.sessionId)) {
-        console.log("[Session] Ignoring SSE update for child session:", event.sessionId);
+      // Check if already known as a child session (registered or in store with parentID)
+      const isChild = isChildSession(event.sessionId) ||
+        get().sessions.some((s) => s.id === event.sessionId && s.parentID);
+
+      // If parentID is in the event, handle as child
+      if (event.parentID) {
+        const existingSession = get().sessions.find(s => s.id === event.sessionId);
+        if (!existingSession) {
+          addChildSession(set, get, event.sessionId, event.parentID, get().activeSessionId, event.title);
+        } else if (!existingSession.parentID) {
+          set((state) => ({
+            sessions: state.sessions.map((s) =>
+              s.id === event.sessionId ? { ...s, parentID: event.parentID, ...(event.title ? { title: event.title } : {}) } : s,
+            ),
+          }));
+        }
+        if (event.title && isChild) {
+          set((state) => ({
+            sessions: state.sessions.map((s) =>
+              s.id === event.sessionId ? { ...s, title: event.title!, updatedAt: new Date() } : s,
+            ),
+          }));
+        }
         return;
       }
 
-      console.log("[Session] Session updated externally:", event.sessionId);
+      if (isChild) {
+        if (event.title) {
+          set((state) => ({
+            sessions: state.sessions.map((s) =>
+              s.id === event.sessionId ? { ...s, title: event.title!, updatedAt: new Date() } : s,
+            ),
+          }));
+        }
+        return;
+      }
 
+      // Session not known as child — for existing sessions, just refresh
+      const existingSession = get().sessions.find(s => s.id === event.sessionId);
+      if (existingSession) {
+        if (event.title) {
+          set((state) => ({
+            sessions: state.sessions.map((s) =>
+              s.id === event.sessionId ? { ...s, title: event.title!, updatedAt: new Date() } : s,
+            ),
+          }));
+        }
+        debouncedRefreshSessions();
+        return;
+      }
+
+      // Unknown session — check API to determine if it's a child before adding
       const workspacePath = useWorkspaceStore.getState().workspacePath;
-
       if (event.directory && workspacePath) {
         if (!workspacePathsMatch(event.directory, workspacePath)) {
           return;
         }
       }
 
-      const existingSession = get().sessions.find(s => s.id === event.sessionId);
-      if (!existingSession) {
-        console.log("[Session] Session updated but not in list - treating as new:", event.sessionId);
-        set((state) => ({
-          highlightedSessionIds: [...state.highlightedSessionIds, event.sessionId],
-        }));
-        setTimeout(() => {
-          import("./session-store").then(({ useSessionStore }) => {
-            useSessionStore.getState().clearHighlightedSession(event.sessionId);
-          });
-        }, 5000);
-      }
-
-      debouncedRefreshSessions();
+      getOpenCodeClient().getSession(event.sessionId).then((sessionInfo) => {
+        if (sessionInfo?.parentID) {
+          addChildSession(set, get, event.sessionId, sessionInfo.parentID, get().activeSessionId, sessionInfo.title);
+        } else {
+          debouncedRefreshSessions();
+        }
+      }).catch(() => {
+        debouncedRefreshSessions();
+      });
     },
 
     // Clear a highlighted session ID
@@ -210,6 +294,15 @@ export function createLifecycleHandlers(set: SessionSet, get: SessionGet) {
         if (event.status.type === 'idle') {
           console.log("[Session] Child session idle, finalizing:", event.sessionId);
           cleanupChildSession(event.sessionId);
+          set((state) => ({
+            pendingPermissions: state.pendingPermissions.filter(
+              (e) => e.childSessionId !== event.sessionId,
+            ),
+            pendingQuestions: state.pendingQuestions.filter(
+              (q) => q.sessionId !== event.sessionId,
+            ),
+          }));
+          get().loadChildSessionMessages(event.sessionId);
         }
         return;
       }
@@ -377,18 +470,16 @@ export function createLifecycleHandlers(set: SessionSet, get: SessionGet) {
               sessionStatus: status,
               sessionError: null,
               sessions: newSessions,
-              pendingPermission: null,
-              pendingPermissionChildSessionId: null,
-              pendingQuestion: null,
+              pendingPermissions: [],
+              pendingQuestions: [],
             };
           });
         } else {
           set((state) => ({
             sessionStatus: status,
             sessionError: state.sessionError?.error?.name === 'RetryError' ? null : state.sessionError,
-            pendingPermission: null,
-            pendingPermissionChildSessionId: null,
-            pendingQuestion: null,
+            pendingPermissions: [],
+            pendingQuestions: [],
           }));
         }
       } else {
@@ -412,8 +503,8 @@ export function createLifecycleHandlers(set: SessionSet, get: SessionGet) {
         activeSessionId, 
         sessions: currentSessions, 
         setActiveSession: navigateToSession,
-        pendingQuestion,
-        pendingPermission,
+        pendingQuestions,
+        pendingPermissions,
       } = get();
       const { streamingMessageId } = useStreamingStore.getState();
 
@@ -421,11 +512,11 @@ export function createLifecycleHandlers(set: SessionSet, get: SessionGet) {
         // CRITICAL: Do NOT clear streaming if session is waiting for user interaction
         // When AI asks a question or requests permission, OpenCode sends session.idle
         // but the session is still active (waiting for user response)
-        if (pendingQuestion || pendingPermission) {
+        if (pendingQuestions.length > 0 || pendingPermissions.length > 0) {
           console.log("[SessionIdle] Session waiting for user interaction, preserving streaming state:", {
             streamingMessageId,
-            hasPendingQuestion: !!pendingQuestion,
-            hasPendingPermission: !!pendingPermission,
+            pendingQuestionsCount: pendingQuestions.length,
+            pendingPermissionsCount: pendingPermissions.length,
           });
           // Keep streaming state active so:
           // 1. Typewriter continues if there's buffered content
@@ -641,9 +732,66 @@ export function createLifecycleHandlers(set: SessionSet, get: SessionGet) {
           id?: string;
           type?: string;
           sessionID?: string;
+          tool?: string;
+          state?: { status: string; title?: string };
         } | undefined;
         if (part?.id && part?.type) {
           childPartTypes.set(part.id, part.type);
+        }
+
+        // Update TaskToolCard summary for tool parts in child sessions
+        const isToolPart = part?.type === "tool" || part?.type === "tool-call";
+        if (isToolPart && part?.sessionID && part?.tool) {
+          const { activeSessionId } = get();
+          const { streamingMessageId } = useStreamingStore.getState();
+          if (activeSessionId && streamingMessageId) {
+            set((state) => {
+              const session = getSessionById(activeSessionId);
+              if (!session) return state;
+
+              const msgIndex = session.messages.findIndex(m => m.id === streamingMessageId);
+              if (msgIndex === -1) return state;
+
+              const msg = session.messages[msgIndex];
+              const taskToolCall = msg.toolCalls?.find(
+                tc => tc.name === "task" && tc.metadata?.sessionId === part.sessionID,
+              );
+              if (!taskToolCall) return state;
+
+              const summaryItem = {
+                id: part.id!,
+                tool: part.tool!,
+                state: {
+                  status: part.state?.status || "running",
+                  title: part.state?.title,
+                },
+              };
+
+              const currentSummary = taskToolCall.metadata?.summary || [];
+              const existingIdx = currentSummary.findIndex(s => s.id === part.id);
+              const newSummary = existingIdx >= 0
+                ? currentSummary.map((s, i) => i === existingIdx ? summaryItem : s)
+                : [...currentSummary, summaryItem];
+
+              const updatedToolCalls = msg.toolCalls?.map(tc =>
+                tc.name === "task" && tc.metadata?.sessionId === part.sessionID
+                  ? { ...tc, metadata: { ...tc.metadata, summary: newSummary } }
+                  : tc,
+              );
+
+              const newMsg = { ...msg, toolCalls: updatedToolCalls };
+              const newMessages = [...session.messages];
+              newMessages[msgIndex] = newMsg;
+              const newSession = { ...session, messages: newMessages };
+              sessionLookupCache.set(activeSessionId, newSession);
+
+              return {
+                sessions: state.sessions.map(s =>
+                  s.id === activeSessionId ? newSession : s,
+                ),
+              };
+            });
+          }
         }
         return;
       }
