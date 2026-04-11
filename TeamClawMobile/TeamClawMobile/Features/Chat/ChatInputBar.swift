@@ -53,16 +53,16 @@ struct ChatInputBar: View {
             HStack(spacing: 0) {
                 Button(action: onTogglePin) {
                     Image(systemName: session.isPinned ? "pin.slash.fill" : "pin.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.primary)
-                        .frame(width: 48, height: 48)
+                        .font(.system(size: 22, weight: .medium))
+                        .foregroundStyle(session.isPinned ? .orange : .secondary)
+                        .frame(width: 52, height: 52)
                 }
 
                 Button { showArchiveConfirmation = true } label: {
                     Image(systemName: "archivebox.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.primary)
-                        .frame(width: 48, height: 48)
+                        .font(.system(size: 22, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 52, height: 52)
                 }
             }
             .liquidGlass(in: Capsule())
@@ -74,9 +74,9 @@ struct ChatInputBar: View {
                 // TODO: voice input
             } label: {
                 Image(systemName: "mic.fill")
-                    .font(.system(size: 22))
+                    .font(.system(size: 24, weight: .medium))
                     .foregroundStyle(.primary)
-                    .frame(width: 56, height: 56)
+                    .frame(width: 60, height: 60)
             }
             .liquidGlass(in: Circle())
 
@@ -86,9 +86,9 @@ struct ChatInputBar: View {
             HStack(spacing: 0) {
                 Button(action: onShowMenu) {
                     Image(systemName: "ellipsis")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.primary)
-                        .frame(width: 48, height: 48)
+                        .font(.system(size: 22, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 52, height: 52)
                 }
 
                 Button {
@@ -96,9 +96,9 @@ struct ChatInputBar: View {
                     isInputFocused = true
                 } label: {
                     Image(systemName: "square.and.pencil")
-                        .font(.system(size: 20))
+                        .font(.system(size: 22, weight: .medium))
                         .foregroundStyle(.primary)
-                        .frame(width: 48, height: 48)
+                        .frame(width: 52, height: 52)
                 }
             }
             .liquidGlass(in: Capsule())
