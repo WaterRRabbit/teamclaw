@@ -64,7 +64,7 @@ struct SettingsView: View {
                         HStack {
                             Text("Host")
                             Spacer()
-                            Text(PairingManager.sharedHost)
+                            Text(PairingManager.currentCredentials?.mqttHost ?? "—")
                                 .foregroundStyle(.secondary)
                                 .font(.caption)
                                 .lineLimit(1)
@@ -73,7 +73,7 @@ struct SettingsView: View {
                         HStack {
                             Text("Port")
                             Spacer()
-                            Text("\(PairingManager.sharedPort)")
+                            Text("\(PairingManager.currentCredentials?.mqttPort ?? 0)")
                                 .foregroundStyle(.secondary)
                         }
 
