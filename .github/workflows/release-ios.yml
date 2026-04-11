@@ -65,8 +65,8 @@ jobs:
       - name: Set version and build number
         working-directory: TeamClawMobile
         run: |
-          # Version from root package.json (single source of truth)
-          VERSION=$(node -p "require('../package.json').version")
+          # Version from iOS Info.plist (iOS has its own version)
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" TeamClawMobile/Info.plist)
           # Override with git tag if present
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/v}"
