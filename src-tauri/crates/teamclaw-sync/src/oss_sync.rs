@@ -106,6 +106,11 @@ pub struct OssSyncManager {
     pub connected: bool,
     syncing: bool,
     event_emitter: Option<Box<dyn SyncEventEmitter>>,
+
+    /// Files observed on disk during this session.  Used by `write_doc_to_disk`
+    /// to avoid recreating files the user just deleted — those should be left
+    /// for `upload_local_changes` to mark as `deleted=true` first.
+    seen_disk_files: HashMap<DocType, HashSet<String>>,
 }
 
 pub struct OssSyncState {
@@ -264,6 +269,7 @@ impl OssSyncManager {
             connected: false,
             syncing: false,
             event_emitter,
+            seen_disk_files: HashMap::new(),
         }
     }
 
@@ -1149,6 +1155,14 @@ impl OssSyncManager {
         let (mtime_changed, inc_skipped) = Self::scan_local_files_incremental(&dir, since)?;
         self.skipped_files.extend(inc_skipped);
 
+        // Track files from the incremental scan
+        if !mtime_changed.is_empty() {
+            let seen = self.seen_disk_files.entry(doc_type).or_default();
+            for path in mtime_changed.keys() {
+                seen.insert(path.clone());
+            }
+        }
+
         if mtime_changed.is_empty() {
             // No mtime changes, but files may have been deleted since the
             // last scan.  Check the CRDT for entries that are not marked
@@ -1156,6 +1170,13 @@ impl OssSyncManager {
             // found, delegate to the full `upload_local_changes` which
             // handles deletion marking + upload in one shot.
             let (local_files, _skipped) = Self::scan_local_files(&dir)?;
+
+            // Track files from the full scan
+            let seen = self.seen_disk_files.entry(doc_type).or_default();
+            for path in local_files.keys() {
+                seen.insert(path.clone());
+            }
+
             let doc = self.get_doc(doc_type);
             let files_map = doc.get_map("files");
             let map_value = files_map.get_deep_value();
@@ -1389,7 +1410,7 @@ impl OssSyncManager {
 
     /// Write LoroDoc state to disk and absorb any local-only files into the CRDT.
     /// Returns `Ok(true)` if files were absorbed (caller should upload the changes).
-    pub fn write_doc_to_disk(&self, doc_type: DocType) -> Result<bool, String> {
+    pub fn write_doc_to_disk(&mut self, doc_type: DocType) -> Result<bool, String> {
         let doc = self.get_doc(doc_type);
         let dir = self.team_dir.join(doc_type.dir_name());
 
@@ -1427,7 +1448,7 @@ impl OssSyncManager {
                             // hash differs the user re-added or modified the
                             // file locally — preserve it so the absorb phase
                             // below can rescue it into the CRDT.
-                            let should_delete = match entry.get("hash") {
+                            let hash_matches = match entry.get("hash") {
                                 Some(loro::LoroValue::String(doc_hash)) => {
                                     match std::fs::read(&file_path) {
                                         Ok(disk_content) => {
@@ -1439,19 +1460,77 @@ impl OssSyncManager {
                                 }
                                 _ => true,
                             };
+
+                            // Even when the hash matches, the user may have
+                            // re-added the exact same file after deleting it.
+                            // Compare the file's mtime against the CRDT
+                            // deletion timestamp — if the file on disk is
+                            // newer, preserve it and let the absorb phase
+                            // re-set deleted=false.
+                            let file_is_newer = if hash_matches {
+                                match (
+                                    std::fs::metadata(&file_path)
+                                        .ok()
+                                        .and_then(|m| m.modified().ok()),
+                                    entry.get("updatedAt"),
+                                ) {
+                                    (
+                                        Some(mtime),
+                                        Some(loro::LoroValue::String(updated_at)),
+                                    ) => {
+                                        if let Ok(crdt_time) =
+                                            chrono::DateTime::parse_from_rfc3339(updated_at)
+                                        {
+                                            let mtime_unix = mtime
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default()
+                                                .as_secs() as i64;
+                                            mtime_unix > crdt_time.timestamp()
+                                        } else {
+                                            false
+                                        }
+                                    }
+                                    _ => false,
+                                }
+                            } else {
+                                false
+                            };
+
+                            let should_delete = hash_matches && !file_is_newer;
                             if should_delete {
                                 let rel = format!("{}/{}", doc_type.dir_name(), path);
                                 if let Some(emitter) = self.event_emitter.as_ref() {
                                     emitter.trash_file(&self.team_dir, &rel);
                                 }
                                 let _ = std::fs::remove_file(&file_path);
+                            } else if file_is_newer {
+                                info!(
+                                    "File re-added after deletion, preserving: {}",
+                                    path
+                                );
                             }
                         }
                     } else {
-                        doc_files.insert(path.to_string());
-
                         if let Some(loro::LoroValue::String(content_str)) = entry.get("content") {
                             let final_path = dir.join(path.as_str());
+
+                            // Guard: if the file doesn't exist on disk but we
+                            // previously saw it during this session, the user
+                            // deleted it.  Don't recreate — let
+                            // upload_local_changes mark it as deleted=true.
+                            if !final_path.exists() {
+                                if let Some(seen) = self.seen_disk_files.get(&doc_type) {
+                                    if seen.contains(path.as_str()) {
+                                        info!(
+                                            "File was deleted locally, skipping recreate: {}",
+                                            path
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            doc_files.insert(path.to_string());
 
                             // Check whether the file on disk was modified
                             // externally (e.g. replaced via Finder while the
@@ -1493,6 +1572,8 @@ impl OssSyncManager {
                                 })?;
                                 pending_writes.push((tmp_path, final_path));
                             }
+                        } else {
+                            doc_files.insert(path.to_string());
                         }
                     }
                 }
@@ -1524,6 +1605,16 @@ impl OssSyncManager {
             let _ = std::fs::remove_dir_all(&tmp_dir);
         }
 
+        // Track files just written so they are known for future cycles
+        {
+            let seen = self.seen_disk_files.entry(doc_type).or_default();
+            for (_tmp, final_path) in &pending_writes {
+                if let Ok(rel) = final_path.strip_prefix(&dir) {
+                    seen.insert(rel.to_string_lossy().to_string());
+                }
+            }
+        }
+
         // After writing Secrets files to disk, reload the in-memory secrets map
         // and notify the frontend so that env-var resolution picks up the latest values.
         if doc_type == DocType::Secrets {
@@ -1543,6 +1634,12 @@ impl OssSyncManager {
             let (disk_files, _skipped) = Self::scan_local_files(&dir)?;
             let now = Utc::now().to_rfc3339();
             let node_id = &self.node_id;
+
+            // Track all files currently on disk
+            let seen = self.seen_disk_files.entry(doc_type).or_default();
+            for path in disk_files.keys() {
+                seen.insert(path.clone());
+            }
 
             for (path, content) in &disk_files {
                 if !doc_files.contains(path) || locally_modified.contains(path) {
@@ -1716,6 +1813,13 @@ impl OssSyncManager {
         self.skipped_files.clear();
         let dir = self.team_dir.join(doc_type.dir_name());
         let (local_files, scan_skipped) = Self::scan_local_files(&dir)?;
+
+        // Track files currently on disk so write_doc_to_disk can detect
+        // user-initiated deletions.
+        let seen = self.seen_disk_files.entry(doc_type).or_default();
+        for path in local_files.keys() {
+            seen.insert(path.clone());
+        }
         self.skipped_files.extend(scan_skipped);
         let changed = self.detect_local_changes(doc_type, &local_files);
 
