@@ -4,5 +4,10 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>teamclaw uses the microphone for voice input to convert speech to text in chat.</string>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <true/>
+  </dict>
 </dict>
 </plist>
