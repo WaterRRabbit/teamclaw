@@ -18,6 +18,7 @@ struct SessionListView: View {
     @State private var navigationPath: [String] = []
     @State private var searchText = ""
     @FocusState private var isSearchFocused: Bool
+    @Namespace private var sheetTransition
 
     // Edit mode
     @State private var isEditing = false
@@ -137,6 +138,7 @@ struct SessionListView: View {
                     viewModel.applySearch()
                     navigationPath.append(newSession.id)
                 }
+                .navigationTransition(.zoom(sourceID: "newSession", in: sheetTransition))
             }
             .sheet(item: $addMemberSession) { session in
                 UnifiedMemberSheet(
@@ -235,6 +237,7 @@ struct SessionListView: View {
                             .frame(width: 48, height: 48)
                     }
                     .liquidGlass(in: Circle())
+                    .matchedTransitionSource(id: "newSession", in: sheetTransition)
                     .transition(.scale.combined(with: .opacity))
                 }
             }
