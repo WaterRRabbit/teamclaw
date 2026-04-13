@@ -126,7 +126,7 @@ jobs:
             set -e
             echo "Building teamclaw-introspect for ${{ matrix.target }}..."
             cargo build --release --manifest-path src-tauri/crates/teamclaw-introspect/Cargo.toml --target ${{ matrix.target }}
-            cp target/${{ matrix.target }}/release/teamclaw-introspect src-tauri/binaries/teamclaw-introspect-${{ matrix.target }}
+            cp src-tauri/target/${{ matrix.target }}/release/teamclaw-introspect src-tauri/binaries/teamclaw-introspect-${{ matrix.target }}
             chmod +x src-tauri/binaries/teamclaw-introspect-${{ matrix.target }}
             echo "teamclaw-introspect ready"
           ) > /tmp/introspect.log 2>&1 &
@@ -306,7 +306,7 @@ jobs:
         shell: bash
         run: |
           cargo build --release --manifest-path src-tauri/crates/teamclaw-introspect/Cargo.toml
-          cp target/release/teamclaw-introspect.exe src-tauri/binaries/teamclaw-introspect-x86_64-pc-windows-msvc.exe
+          cp src-tauri/target/release/teamclaw-introspect.exe src-tauri/binaries/teamclaw-introspect-x86_64-pc-windows-msvc.exe
           echo "teamclaw-introspect ready"
 
       # Skip beforeBuildCommand since frontend is already built above
