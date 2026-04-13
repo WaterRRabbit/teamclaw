@@ -4,6 +4,8 @@
 pub use teamclaw_p2p::{
     // Functions
     add_member_to_team,
+    check_join_authorization,
+    clear_p2p_and_team_dir,
     create_team,
     disconnect_source_for_workspace,
     disconnected_engine_snapshot,
@@ -21,17 +23,23 @@ pub use teamclaw_p2p::{
     remove_member_from_team,
     rotate_namespace,
     update_member_role,
+    write_members_manifest,
     write_p2p_config,
     // Types
     DeviceInfo,
     EngineSnapshot,
+    EngineStatus,
     IrohNode,
     IrohState,
     P2pConfig,
     // Event handler trait
     P2pEventHandler,
     P2pSyncStatus,
+    PeerConnection,
+    PeerInfo,
     SkillsContribution,
+    StreamHealth,
+    SyncEngine,
     SyncEngineState,
 };
 

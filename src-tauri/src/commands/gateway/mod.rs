@@ -6,7 +6,9 @@ pub mod mqtt_proto;
 pub mod mqtt_relay;
 
 pub use mqtt_relay::MqttRelay;
-pub use teamclaw_gateway::mqtt_config::{MqttConfig, MqttRelayStatus};
+pub use teamclaw_gateway::mqtt_config::{
+    MqttConfig, MqttRelayStatus, PairedDevice, PairingSession,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;

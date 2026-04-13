@@ -1633,7 +1633,7 @@ fn parse_role_md(content: &str) -> ParsedRole {
         let pattern = format!("## {}", heading);
         if let Some(start) = body.find(&pattern) {
             let after = &body[start + pattern.len()..];
-            let trimmed = after.trim_start_matches(['\n', '\r']);
+            let trimmed = after.trim_start_matches(|c: char| c == '\n' || c == '\r');
             if let Some(next) = trimmed.find("\n## ") {
                 trimmed[..next].trim().to_string()
             } else {

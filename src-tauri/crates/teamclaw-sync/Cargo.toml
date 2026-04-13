@@ -3,9 +3,6 @@ name = "teamclaw-sync"
 version = "0.1.0"
 edition = "2021"
 
-[lints]
-workspace = true
-
 [dependencies]
 # S3/OSS
 aws-sdk-s3 = "1"

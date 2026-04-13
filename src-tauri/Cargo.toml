@@ -2,41 +2,6 @@
 members = [".", "crates/*"]
 resolver = "2"
 
-# Inherit with `[lints] workspace = true` in each member. Keeps `cargo clippy -- -D warnings`
-# (CI) passing under newer Clippy without a multi-thousand-line refactor.
-[workspace.lints.rust]
-private_interfaces = "allow"
-unused_variables = "allow"
-dead_code = "allow"
-
-[workspace.lints.clippy]
-redundant_guards = "allow"
-useless_asref = "allow"
-type_complexity = "allow"
-should_implement_trait = "allow"
-manual_clamp = "allow"
-useless_format = "allow"
-map_identity = "allow"
-too_many_arguments = "allow"
-cloned_ref_to_slice_refs = "allow"
-needless_borrows_for_generic_args = "allow"
-collapsible_if = "allow"
-unnecessary_map_or = "allow"
-unnecessary_lazy_evaluations = "allow"
-single_char_add_str = "allow"
-unwrap_or_default = "allow"
-match_single_binding = "allow"
-if_same_then_else = "allow"
-manual_strip = "allow"
-unnecessary_unwrap = "allow"
-new_without_default = "allow"
-derivable_impls = "allow"
-double_ended_iterator_last = "allow"
-manual_div_ceil = "allow"
-trim_split_whitespace = "allow"
-empty_line_after_doc_comments = "allow"
-collapsible_match = "allow"
-
 [package]
 name = "teamclaw"
 version = "0.1.51"
@@ -170,9 +135,6 @@ objc2-web-kit = { version = "0.3", features = ["WKWebViewConfiguration", "WKWebV
 
 [dev-dependencies]
 wiremock = "0.5"
-
-[lints]
-workspace = true
 
 [profile.release]
 # Use unwind so catch_unwind in email.rs and deps (e.g. html2md) work; abort would conflict.

@@ -3,9 +3,6 @@ name = "teamclaw-gateway"
 version = "0.1.0"
 edition = "2021"
 
-[lints]
-workspace = true
-
 [dependencies]
 # Discord
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "rustls_backend"] }

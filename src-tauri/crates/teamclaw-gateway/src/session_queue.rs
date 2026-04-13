@@ -38,12 +38,6 @@ pub struct SessionQueue {
     queues: Arc<RwLock<HashMap<String, SessionQueueState>>>,
 }
 
-impl Default for SessionQueue {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl SessionQueue {
     pub fn new() -> Self {
         Self {

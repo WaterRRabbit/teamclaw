@@ -7,9 +7,6 @@ edition = "2024"
 exclude = ["/examples", "/dist-js", "/guest-js", "/node_modules"]
 links = "tauri-plugin-mcp"
 
-[lints]
-workspace = true
-
 [dependencies]
 anyhow = "1.0"
 base64 = "0.13.0"

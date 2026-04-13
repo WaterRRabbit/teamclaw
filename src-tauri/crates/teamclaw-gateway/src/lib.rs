@@ -645,7 +645,7 @@ pub fn format_model_list(models: &[ModelInfo], active_model: &str, is_custom: bo
     for m in models {
         provider_groups
             .entry(m.provider.clone())
-            .or_default()
+            .or_insert_with(Vec::new)
             .push(m);
     }
 

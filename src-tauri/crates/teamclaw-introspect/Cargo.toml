@@ -3,9 +3,6 @@ name = "teamclaw-introspect"
 version = "0.1.0"
 edition = "2021"
 
-[lints]
-workspace = true
-
 [[bin]]
 name = "teamclaw-introspect"
 path = "src/main.rs"

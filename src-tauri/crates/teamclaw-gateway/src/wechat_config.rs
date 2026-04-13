@@ -36,15 +36,18 @@ impl Default for WeChatConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
-#[derive(Default)]
 pub enum WeChatGatewayStatus {
-    #[default]
     Disconnected,
     Connecting,
     Connected,
     Error,
 }
 
+impl Default for WeChatGatewayStatus {
+    fn default() -> Self {
+        Self::Disconnected
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

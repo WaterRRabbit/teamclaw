@@ -1261,7 +1261,7 @@ impl WeComGateway {
             {
                 Ok((data_url, mime, raw_bytes)) => {
                     // Save image to workspace so the UI can display it
-                    let ext = mime.split('/').next_back().unwrap_or("png");
+                    let ext = mime.split('/').last().unwrap_or("png");
                     let ts = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -1850,7 +1850,7 @@ impl WeComGateway {
                                 }
 
                                 if role == Some("assistant")
-                                    && created_time.is_some_and(|t| t >= send_timestamp_ms)
+                                    && created_time.map_or(false, |t| t >= send_timestamp_ms)
                                     && completed_time.is_some()
                                     && finish_reason != Some("tool-calls")
                                 {
@@ -2374,7 +2374,7 @@ impl WeComGateway {
         let md5_hash = format!("{:x}", md5::compute(data));
         let total_size = data.len();
         const CHUNK_SIZE: usize = 512 * 1024; // Max 512KB per chunk
-        let total_chunks = total_size.div_ceil(CHUNK_SIZE);
+        let total_chunks = (total_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
         // Step 1: Init
         let init_req_id = uuid::Uuid::new_v4().to_string();

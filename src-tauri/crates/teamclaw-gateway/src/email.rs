@@ -1863,7 +1863,7 @@ fn ensure_references_brackets(references: &str) -> String {
     // Split by whitespace and ensure each ID is bracketed
     references
         .split_whitespace()
-        .map(ensure_angle_brackets)
+        .map(|id| ensure_angle_brackets(id))
         .filter(|id| !id.is_empty())
         .collect::<Vec<_>>()
         .join(" ")

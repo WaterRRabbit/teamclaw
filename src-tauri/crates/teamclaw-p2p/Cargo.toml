@@ -3,9 +3,6 @@ name = "teamclaw-p2p"
 version = "0.1.0"
 edition = "2021"
 
-[lints]
-workspace = true
-
 [dependencies]
 iroh = "0.97"
 iroh-blobs = { version = "0.99", features = ["fs-store"] }

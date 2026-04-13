@@ -81,7 +81,6 @@ impl Default for KookGuildConfig {
 /// KOOK channel configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(Default)]
 pub struct KookConfig {
     /// Whether KOOK integration is enabled
     #[serde(default)]
@@ -100,19 +99,32 @@ pub struct KookConfig {
     pub guilds: HashMap<String, KookGuildConfig>,
 }
 
+impl Default for KookConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            token: String::new(),
+            dm: KookDmConfig::default(),
+            guilds: HashMap::new(),
+        }
+    }
+}
 
 /// KOOK gateway status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
-#[derive(Default)]
 pub enum KookGatewayStatus {
-    #[default]
     Disconnected,
     Connecting,
     Connected,
     Error,
 }
 
+impl Default for KookGatewayStatus {
+    fn default() -> Self {
+        Self::Disconnected
+    }
+}
 
 /// KOOK gateway status response
 #[derive(Debug, Clone, Serialize, Deserialize)]
