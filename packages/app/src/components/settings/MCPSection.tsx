@@ -32,7 +32,7 @@ import { SettingCard, SectionHeader, ToggleSwitch } from './shared'
 import { AddMCPDialog } from './AddMCPDialog'
 
 // MCP names that are always auto-injected by TeamClaw and cannot be deleted
-const INHERENT_MCP_NAMES = new Set(['playwright', 'chrome-control', 'autoui'])
+const INHERENT_MCP_NAMES = new Set(['playwright', 'chrome-control', 'autoui', 'teamclaw-introspect'])
 
 // Status indicator component
 function StatusDot({ status }: { status?: MCPServerStatus }) {
