@@ -40,7 +40,7 @@ impl SyncEventEmitter for NoopEmitter {
     fn trash_file(&self, _team_dir: &Path, _rel_path: &str) {}
 }
 
-const KEYRING_SERVICE: &str = "teamclaw-oss";
+const _KEYRING_SERVICE: &str = "teamclaw-oss";
 const TOKEN_REFRESH_MARGIN_SECS: i64 = 300; // refresh 5 min before expiry
 /// Maximum file size (in bytes) that will be synced. Files larger than this
 /// are silently skipped during scan to prevent OOM and oversized S3 PUTs.
@@ -100,7 +100,7 @@ pub struct OssSyncManager {
     poll_interval: Duration,
     workspace_path: String,
     teamclaw_dir_name: String,
-    config_file_name: String,
+    _config_file_name: String,
     team_dir: PathBuf,
     loro_cache_dir: PathBuf,
     pub connected: bool,
@@ -134,6 +134,7 @@ impl Default for OssSyncState {
 // ---------------------------------------------------------------------------
 
 impl OssSyncManager {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         team_id: String,
         node_id: String,
@@ -263,7 +264,7 @@ impl OssSyncManager {
             poll_interval,
             workspace_path,
             teamclaw_dir_name,
-            config_file_name,
+            _config_file_name: config_file_name,
             team_dir,
             loro_cache_dir,
             connected: false,
@@ -968,6 +969,7 @@ impl OssSyncManager {
         })
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn scan_local_files(dir: &Path) -> Result<(HashMap<String, Vec<u8>>, Vec<SkippedFile>), String> {
         let mut result = HashMap::new();
         let mut skipped = Vec::new();
@@ -1064,6 +1066,7 @@ impl OssSyncManager {
 
     /// Like `scan_local_files`, but only reads files whose mtime is newer than `since`.
     /// Used by the fast loop for quick change detection.
+    #[allow(clippy::type_complexity)]
     pub fn scan_local_files_incremental(
         dir: &Path,
         since: std::time::SystemTime,

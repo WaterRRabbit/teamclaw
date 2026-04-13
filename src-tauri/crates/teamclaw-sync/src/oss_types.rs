@@ -116,20 +116,16 @@ pub struct TeamApplication {
     pub applied_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum SyncHealth {
+    #[default]
     Healthy,
     Warning,
     Error,
     Offline,
 }
 
-impl Default for SyncHealth {
-    fn default() -> Self {
-        SyncHealth::Healthy
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

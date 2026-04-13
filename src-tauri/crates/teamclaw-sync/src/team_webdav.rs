@@ -605,8 +605,8 @@ pub fn encrypt_config(payload: &ExportPayload, password: &str) -> Result<String,
     let export = serde_json::json!({
         "type": "teamclaw-team-webdav",
         "version": 1,
-        "salt": BASE64.encode(&salt),
-        "nonce": BASE64.encode(&nonce_bytes),
+        "salt": BASE64.encode(salt),
+        "nonce": BASE64.encode(nonce_bytes),
         "ciphertext": BASE64.encode(&ciphertext),
     });
 
@@ -646,6 +646,7 @@ pub fn decrypt_config(encrypted_json: &str, password: &str) -> Result<ExportPayl
 
 // --- Background Sync Timer ---
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_sync_timer(
     client: Client,
     url: String,
@@ -683,6 +684,7 @@ pub fn spawn_sync_timer(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn do_background_sync(
     client: &Client,
     url: &str,
