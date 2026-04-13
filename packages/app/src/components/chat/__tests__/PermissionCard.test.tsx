@@ -158,4 +158,46 @@ describe('PendingPermissionInline', () => {
     expect(screen.getByText('Deny')).toBeTruthy();
     expect(screen.getByText('brainstorming')).toBeTruthy();
   });
+
+  it('renders only the oldest child permission card with queued count and stacked backplates', async () => {
+    sessionState.pendingPermissions = [
+      {
+        permission: {
+          id: 'perm-1',
+          permission: 'bash',
+          patterns: ['first-command'],
+        },
+        childSessionId: 'child-sess-1',
+      },
+      {
+        permission: {
+          id: 'perm-2',
+          permission: 'skill',
+          patterns: [],
+          metadata: {
+            skill: 'second-skill',
+          },
+        },
+        childSessionId: 'child-sess-2',
+      },
+      {
+        permission: {
+          id: 'perm-3',
+          permission: 'read',
+          patterns: ['third-path'],
+        },
+        childSessionId: 'child-sess-3',
+      },
+    ];
+
+    const { PendingPermissionInline } = await import('../PermissionCard');
+
+    render(<PendingPermissionInline />);
+
+    expect(screen.getByText('first-command')).toBeTruthy();
+    expect(screen.queryByText('second-skill')).toBeNull();
+    expect(screen.queryByText('third-path')).toBeNull();
+    expect(screen.getByText('3 pending')).toBeTruthy();
+    expect(screen.getAllByTestId('pending-permission-backplate')).toHaveLength(2);
+  });
 });

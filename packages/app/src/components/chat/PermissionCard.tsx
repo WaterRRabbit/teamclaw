@@ -14,7 +14,7 @@ const permissionMeta: Record<string, { icon: React.ComponentType<{ className?: s
   skill: { icon: Terminal, title: "Run skill" },
 }
 
-function PermissionEntryCard({ entry }: { entry: PendingPermissionEntry }) {
+function PermissionEntryCard({ entry, pendingCount }: { entry: PendingPermissionEntry; pendingCount: number }) {
   const replyPermission = useSessionStore((s) => s.replyPermission)
   const [submitting, setSubmitting] = React.useState(false)
   const [decided, setDecided] = React.useState<string | null>(null)
@@ -81,6 +81,9 @@ function PermissionEntryCard({ entry }: { entry: PendingPermissionEntry }) {
                 {isExternal ? "Subagent requests access outside the workspace" : "Subagent is waiting for your approval"}
               </div>
             </div>
+            <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+              {pendingCount} pending
+            </span>
             {!isPending && (
               <span className={cn(
                 "rounded-full border px-2 py-0.5 text-[10px] font-medium shrink-0",
@@ -158,22 +161,38 @@ export function PendingPermissionInline() {
 
   if (visiblePermissions.length === 0) return null
 
+  const currentEntry = visiblePermissions[0]
+  const queuedCount = visiblePermissions.length
+  const backplateCount = Math.min(Math.max(queuedCount - 1, 0), 2)
+
   return (
     <div
       data-testid="pending-permission-inline"
       className="relative z-0 mx-auto mb-[-65px] mt-3 flex w-[min(92vw,40rem)] justify-center"
     >
-      <div className="w-full space-y-3">
-        {visiblePermissions.map(entry => (
-          <div key={entry.permission.id} className="relative">
-            <PermissionEntryCard entry={entry} />
+      <div className="w-full">
+        <div className="relative">
+          {Array.from({ length: backplateCount }).map((_, index) => (
+            <div
+              key={`backplate-${index}`}
+              data-testid="pending-permission-backplate"
+              aria-hidden="true"
+              className={cn(
+                "pointer-events-none absolute inset-x-0 rounded-t-[18px] rounded-b-none bg-card/88",
+                index === 0 && "top-3 h-[calc(100%-10px)] scale-[0.985]",
+                index === 1 && "top-6 h-[calc(100%-20px)] scale-[0.97]",
+              )}
+            />
+          ))}
+          <div className="relative z-[1]">
+            <PermissionEntryCard entry={currentEntry} pendingCount={queuedCount} />
             <div
               data-testid="pending-permission-tail"
               aria-hidden="true"
               className="pointer-events-none h-16 bg-card"
             />
           </div>
-        ))}
+        </div>
       </div>
     </div>
   )
