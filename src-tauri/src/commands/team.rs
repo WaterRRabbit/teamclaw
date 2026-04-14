@@ -20,6 +20,9 @@ pub struct TeamConfig {
     /// Personal Access Token for HTTPS authentication (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_token: Option<String>,
+    /// Git branch to sync (e.g. "main", "master", "dev"). If None, auto-detect.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_branch: Option<String>,
 }
 
 /// LLM configuration stored in teamclaw.json under "llm" key.
@@ -243,28 +246,65 @@ pub fn scaffold_team_dir(team_dir: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Ensure the .gitignore in team_dir has all rules from GITIGNORE_CONTENT.
+/// Appends missing rules if the file exists, or creates it if missing.
+fn ensure_gitignore_rules(team_dir: &str) {
+    let gitignore_path = Path::new(team_dir).join(".gitignore");
+    if !gitignore_path.exists() {
+        let _ = std::fs::write(&gitignore_path, GITIGNORE_CONTENT);
+        return;
+    }
+    let existing = match std::fs::read_to_string(&gitignore_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let mut missing = Vec::new();
+    for line in GITIGNORE_CONTENT.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if !existing.lines().any(|l| l.trim() == t) {
+            missing.push(t.to_string());
+        }
+    }
+    if missing.is_empty() {
+        return;
+    }
+    let mut content = existing;
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str("\n# Auto-added by TeamClaw\n");
+    for line in &missing {
+        content.push_str(line);
+        content.push('\n');
+    }
+    let _ = std::fs::write(&gitignore_path, content);
+}
+
 fn get_team_repo_path(workspace_path: &str) -> String {
     let p = Path::new(workspace_path).join(TEAM_REPO_DIR);
     p.to_string_lossy().to_string()
 }
 
-/// Build an LlmConfig from optional parameters, falling back to defaults.
+/// Build an LlmConfig from optional parameters.
+/// Returns None when no base_url is provided (user chose not to host LLM).
 pub fn build_llm_config(
     base_url: Option<String>,
     model: Option<String>,
     model_name: Option<String>,
-) -> LlmConfig {
-    LlmConfig {
-        base_url: base_url
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+) -> Option<LlmConfig> {
+    let url = base_url.filter(|s| !s.is_empty())?;
+    Some(LlmConfig {
+        base_url: url,
         model: model
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "default".to_string()),
         model_name: model_name
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "default".to_string()),
-    }
+    })
 }
 
 /// Write LLM config to teamclaw.json under "llm" key, preserving other fields.
@@ -403,31 +443,52 @@ pub fn write_team_mode(workspace_path: &str, mode: Option<&str>) -> Result<(), S
 
 /// The whitelist .gitignore content
 const GITIGNORE_CONTENT: &str = r#"# ============================================
-# TeamClaw Workspace — Whitelist mode
+# TeamClaw Team Drive — Whitelist mode
 # Ignore everything by default, only allow shared layer
 # ============================================
 
 # 1. Ignore all files by default
 *
 
-# 2. Allow shared layer: skills
+# 2. Allow shared layers
 !skills/
 !skills/**
-
-# 3. Allow shared layer: MCP config
 !.mcp/
 !.mcp/**
-
-# 4. Allow shared layer: knowledge base
 !knowledge/
 !knowledge/**
+!_feedback/
+!_feedback/**
+!_meta/
+!_meta/**
 
-# 5. Allow workspace config
+# 3. Allow workspace config
 !.gitignore
+!README.md
 
-# 6. Allow Git collaboration config (team mode)
-!.github/
-!.github/**
+# 4. Explicitly ignore (never sync)
+.trash/
+.DS_Store
+node_modules/
+.git/
+target/
+dist/
+build/
+out/
+.cache/
+.turbo/
+.next/
+.nuxt/
+.output/
+__pycache__/
+.venv/
+venv/
+.tox/
+vendor/
+.gradle/
+.m2/
+*.log
+*.tmp
 "#;
 
 // ─── Team MCP Sync ──────────────────────────────────────────────────────────
@@ -593,6 +654,21 @@ pub fn get_team_status(opencode_state: State<'_, OpenCodeState>) -> Result<TeamS
     Ok(check_team_status(&workspace_path))
 }
 
+/// Update LLM config for an existing team (any mode: P2P, OSS, Git, WebDAV).
+/// Called from the "服务配置" section in team settings.
+#[tauri::command]
+pub fn update_team_llm_config(
+    llm_base_url: Option<String>,
+    llm_model: Option<String>,
+    llm_model_name: Option<String>,
+    opencode_state: State<'_, OpenCodeState>,
+) -> Result<(), String> {
+    let workspace_path = get_workspace_path(&opencode_state)?;
+    let llm_config = build_llm_config(llm_base_url, llm_model, llm_model_name);
+    write_llm_config(&workspace_path, llm_config.as_ref())?;
+    Ok(())
+}
+
 // ─── Tauri Commands: Git Operations ─────────────────────────────────────────
 
 /// 1.1 - Check if git is installed on the system
@@ -635,6 +711,7 @@ pub async fn team_check_workspace_has_git(
 pub async fn team_init_repo(
     git_url: String,
     git_token: Option<String>,
+    git_branch: Option<String>,
     llm_base_url: Option<String>,
     llm_model: Option<String>,
     llm_model_name: Option<String>,
@@ -658,8 +735,17 @@ pub async fn team_init_repo(
         _ => git_url.clone(),
     };
 
-    // Clone into workspace/teamclaw-team (cwd = workspace, so clone creates teamclaw-team/)
-    let (ok, _, stderr) = run_git(&["clone", &remote_url, TEAM_REPO_DIR], &workspace_path)?;
+    // Clone into workspace/teamclaw-team, optionally specifying a branch
+    let clone_args: Vec<&str> = if let Some(ref branch) = git_branch {
+        if !branch.is_empty() {
+            vec!["clone", "-b", branch.as_str(), &remote_url, TEAM_REPO_DIR]
+        } else {
+            vec!["clone", &remote_url, TEAM_REPO_DIR]
+        }
+    } else {
+        vec!["clone", &remote_url, TEAM_REPO_DIR]
+    };
+    let (ok, _, stderr) = run_git(&clone_args, &workspace_path)?;
     if !ok {
         let _ = std::fs::remove_dir_all(&team_dir);
         return Err(format!(
@@ -668,9 +754,9 @@ pub async fn team_init_repo(
         ));
     }
 
-    // Write LLM config to .teamclaw/teamclaw.json
+    // Write LLM config to .teamclaw/teamclaw.json (only if user chose to host LLM)
     let llm_config = build_llm_config(llm_base_url, llm_model, llm_model_name);
-    write_llm_config(&workspace_path, Some(&llm_config))?;
+    write_llm_config(&workspace_path, llm_config.as_ref())?;
     println!(
         "[Team Init] Wrote LLM config to {}/{}",
         super::TEAMCLAW_DIR,
@@ -700,28 +786,18 @@ pub async fn team_init_repo(
     })
 }
 
-/// 1.4 - Generate whitelist .gitignore in team repo dir (skip if remote already has one)
+/// 1.4 - Ensure .gitignore in team repo dir has all required rules.
+/// Creates the file if missing, or appends missing rules if it already exists.
 #[tauri::command]
 pub async fn team_generate_gitignore(
     opencode_state: State<'_, OpenCodeState>,
 ) -> Result<TeamGitResult, String> {
     let workspace_path = get_workspace_path(&opencode_state)?;
     let team_dir = get_team_repo_path(&workspace_path);
-    let gitignore_path = Path::new(&team_dir).join(".gitignore");
-
-    if gitignore_path.exists() {
-        return Ok(TeamGitResult {
-            success: true,
-            message: ".gitignore already exists (from remote), skipping generation".to_string(),
-        });
-    }
-
-    std::fs::write(&gitignore_path, GITIGNORE_CONTENT)
-        .map_err(|e| format!("Failed to write .gitignore: {}", e))?;
-
+    ensure_gitignore_rules(&team_dir);
     Ok(TeamGitResult {
         success: true,
-        message: "Generated whitelist .gitignore".to_string(),
+        message: ".gitignore ensured".to_string(),
     })
 }
 
@@ -741,7 +817,9 @@ pub async fn team_sync_repo(
         ));
     }
 
-    if let Ok(Some(config)) = read_team_config_from_file(&workspace_path) {
+    // Read saved config for token and branch
+    let saved_config = read_team_config_from_file(&workspace_path).ok().flatten();
+    if let Some(ref config) = saved_config {
         if let Some(ref token) = config.git_token {
             if !token.is_empty() && is_https_url(&config.git_url) {
                 let auth_url = embed_token_in_url(&config.git_url, token);
@@ -750,46 +828,51 @@ pub async fn team_sync_repo(
         }
     }
 
+    // Auto-commit local changes if any
+    let (_, status_out, _) = run_git(&["status", "--porcelain"], &team_dir)?;
+    let had_local_changes = !status_out.trim().is_empty();
+    if had_local_changes {
+        let _ = run_git(&["add", "-A"], &team_dir);
+        let _ = run_git(
+            &["commit", "-m", "chore: auto-sync local changes"],
+            &team_dir,
+        );
+    }
+
+    // Determine the branch to sync: saved config → current HEAD → remote default → "main"
+    let branch = saved_config
+        .as_ref()
+        .and_then(|c| c.git_branch.as_deref())
+        .filter(|b| !b.is_empty())
+        .map(|b| b.to_string())
+        .unwrap_or_else(|| {
+            let (ok, stdout, _) = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], &team_dir)
+                .unwrap_or((false, String::new(), String::new()));
+            if ok && !stdout.trim().is_empty() && stdout.trim() != "HEAD" {
+                stdout.trim().to_string()
+            } else {
+                let (ok2, stdout2, _) = run_git(
+                    &["symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
+                    &team_dir,
+                )
+                .unwrap_or((false, String::new(), String::new()));
+                if ok2 && !stdout2.trim().is_empty() {
+                    stdout2
+                        .trim()
+                        .strip_prefix("origin/")
+                        .unwrap_or(stdout2.trim())
+                        .to_string()
+                } else {
+                    "main".to_string()
+                }
+            }
+        });
+
+    let remote_ref = format!("origin/{}", branch);
     let (ok, _, stderr) = run_git(&["fetch", "origin"], &team_dir)?;
     if !ok {
         return Err(format!("git fetch failed: {}", stderr.trim()));
     }
-
-    // Check for local modifications before resetting
-    let (_, status_out, _) = run_git(&["status", "--porcelain"], &team_dir)?;
-    if !status_out.trim().is_empty() {
-        return Ok(TeamGitResult {
-            success: false,
-            message: "Sync skipped: you have local changes. Please commit or discard them before syncing.".to_string(),
-        });
-    }
-
-    // Determine the branch to sync: prefer current HEAD, then remote default, then "main"
-    let branch = {
-        let (ok, stdout, _) = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], &team_dir)?;
-        if ok && !stdout.trim().is_empty() && stdout.trim() != "HEAD" {
-            stdout.trim().to_string()
-        } else {
-            // Fallback: detect remote default branch via origin/HEAD
-            let (ok2, stdout2, _) = run_git(
-                &["symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
-                &team_dir,
-            )?;
-            if ok2 && !stdout2.trim().is_empty() {
-                // stdout2 is like "origin/main", strip the "origin/" prefix
-                stdout2
-                    .trim()
-                    .strip_prefix("origin/")
-                    .unwrap_or(stdout2.trim())
-                    .to_string()
-            } else {
-                "main".to_string()
-            }
-        }
-    };
-
-    // Verify that origin/<branch> actually exists before resetting
-    let remote_ref = format!("origin/{}", branch);
     let (ref_exists, _, _) = run_git(&["rev-parse", "--verify", &remote_ref], &team_dir)?;
     if !ref_exists {
         return Err(format!(
@@ -798,10 +881,54 @@ pub async fn team_sync_repo(
         ));
     }
 
-    let (ok, _, stderr) = run_git(&["reset", "--hard", &remote_ref], &team_dir)?;
-    if !ok {
-        return Err(format!("git reset failed: {}", stderr.trim()));
+    // Try pull --rebase to merge local commits with remote
+    let (rebase_ok, _, _) = run_git(&["pull", "--rebase", "origin", &branch], &team_dir)?;
+    let mut conflict_resolved = false;
+
+    if !rebase_ok {
+        // Conflict — abort rebase, backup local changed files, then reset to remote
+        let _ = run_git(&["rebase", "--abort"], &team_dir);
+
+        // Identify files that differ from remote to backup only conflicting content
+        let (_, diff_out, _) = run_git(&["diff", "--name-only", &remote_ref], &team_dir)?;
+        if !diff_out.trim().is_empty() {
+            let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+            let trash_dir = Path::new(&team_dir).join(".trash").join(&ts);
+            let _ = std::fs::create_dir_all(&trash_dir);
+
+            for file in diff_out.lines() {
+                let file = file.trim();
+                if file.is_empty() || file.starts_with(".trash") {
+                    continue;
+                }
+                let src = Path::new(&team_dir).join(file);
+                if src.is_file() {
+                    let dest = trash_dir.join(file);
+                    if let Some(parent) = dest.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::copy(&src, &dest);
+                }
+            }
+            println!("[Team Sync] conflict detected, backed up local files to .trash/{}", ts);
+        }
+
+        // Force reset to remote
+        let (ok, _, stderr) = run_git(&["reset", "--hard", &remote_ref], &team_dir)?;
+        if !ok {
+            return Err(format!("git reset failed: {}", stderr.trim()));
+        }
+        conflict_resolved = true;
+    } else if had_local_changes {
+        // Rebase succeeded — push local commits to remote
+        let (ok, _, stderr) = run_git(&["push", "origin", &branch], &team_dir)?;
+        if !ok {
+            println!("[Team Sync] push failed (non-fatal): {}", stderr.trim());
+        }
     }
+
+    // Ensure .gitignore has all required rules (auto-upgrade for existing repos)
+    ensure_gitignore_rules(&team_dir);
 
     let mcp_msg = match sync_team_mcp_configs_from_dir(&team_dir, &workspace_path) {
         Ok(count) if count > 0 => {
@@ -818,9 +945,16 @@ pub async fn team_sync_repo(
         }
     };
 
+    let sync_detail = if conflict_resolved {
+        format!("Synced with origin/{} (conflict resolved, local backup in .trash/){}", branch, mcp_msg)
+    } else if had_local_changes {
+        format!("Synced with origin/{} (local changes pushed){}", branch, mcp_msg)
+    } else {
+        format!("Synced with origin/{}{}", branch, mcp_msg)
+    };
     Ok(TeamGitResult {
         success: true,
-        message: format!("Synced to latest origin/{}{}", branch, mcp_msg),
+        message: sync_detail,
     })
 }
 

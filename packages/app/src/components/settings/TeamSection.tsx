@@ -6,12 +6,13 @@ import {
 import { cn } from '@/lib/utils'
 import { TeamP2PConfig } from './team/TeamP2PConfig'
 import { TeamOSSConfig } from './team/TeamOSSConfig'
+import { TeamGitConfig } from './team/TeamGitConfig'
 import { useTeamOssStore } from '@/stores/team-oss'
 import { useTeamModeStore } from '@/stores/team-mode'
 
 // ─── Tab Switcher ────────────────────────────────────────────────────────────
 
-type TeamTab = 'p2p' | 's3'
+type TeamTab = 'p2p' | 's3' | 'git'
 
 function TabSwitcher({
   activeTab,
@@ -25,6 +26,7 @@ function TabSwitcher({
   const tabs: { id: TeamTab; label: string }[] = [
     { id: 'p2p', label: 'P2P' },
     { id: 's3', label: 'S3' },
+    { id: 'git', label: 'Git' },
   ]
 
   return (
@@ -93,6 +95,7 @@ function useActiveSyncMethod(): TeamTab | null {
   // teamclaw.json is the authoritative source — use it during reconnect
   if (teamModeType === 'p2p') return 'p2p'
   if (teamModeType === 'oss') return 's3'
+  if (teamModeType === 'git') return 'git'
 
   // Fall back to runtime connection/configured state
   if (p2pConnected) return 'p2p'
@@ -106,16 +109,22 @@ function useActiveSyncMethod(): TeamTab | null {
 
 export function TeamSection() {
   const { t } = useTranslation()
-  const [activeTab, setActiveTab] = React.useState<TeamTab>('p2p')
   const activeSyncMethod = useActiveSyncMethod()
+  const [activeTab, setActiveTab] = React.useState<TeamTab>(activeSyncMethod ?? 'p2p')
+  const initializedRef = React.useRef(false)
 
+  // Only auto-switch tab on initial load (when activeSyncMethod first resolves),
+  // never override a user's manual tab selection afterwards.
   React.useEffect(() => {
-    setActiveTab(activeSyncMethod ?? 'p2p')
+    if (!initializedRef.current && activeSyncMethod) {
+      setActiveTab(activeSyncMethod)
+      initializedRef.current = true
+    }
   }, [activeSyncMethod])
 
   const disabledTabs = React.useMemo(() => {
     if (!activeSyncMethod) return new Set<TeamTab>()
-    const all: TeamTab[] = ['p2p', 's3']
+    const all: TeamTab[] = ['p2p', 's3', 'git']
     return new Set(all.filter((t) => t !== activeSyncMethod))
   }, [activeSyncMethod])
 
@@ -132,6 +141,7 @@ export function TeamSection() {
 
       {activeTab === 'p2p' && <TeamP2PConfig />}
       {activeTab === 's3' && <TeamOSSConfig />}
+      {activeTab === 'git' && <TeamGitConfig />}
     </div>
   )
 }
