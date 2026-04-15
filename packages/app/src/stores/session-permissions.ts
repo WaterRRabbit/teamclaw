@@ -176,6 +176,19 @@ async function persistAllowlistRule(perm: PermissionAskedEvent): Promise<void> {
 }
 
 export function createPermissionActions(set: SessionSet, get: SessionGet) {
+  const classifyPermissionSession = (sessionId: string | undefined | null) => {
+    const { activeSessionId, sessions } = get();
+    if (!sessionId || sessionId === activeSessionId) {
+      return { isChild: false, childSessionId: null as string | null };
+    }
+
+    const knownSession =
+      sessions.find((session) => session.id === sessionId) ||
+      getSessionById(sessionId);
+    const isChild = !knownSession || !!knownSession.parentID;
+    return { isChild, childSessionId: isChild ? sessionId : null };
+  };
+
   return {
     handlePermissionAsked: (event: PermissionAskedEvent) => {
       // Check permission policy -- auto-authorize if bypass or batch-done
@@ -211,7 +224,7 @@ export function createPermissionActions(set: SessionSet, get: SessionGet) {
         setActiveSession: navigateToSession,
       } = get();
 
-      const isChild = !getSessionById(event.sessionID) && event.sessionID !== activeSessionId;
+      const { isChild, childSessionId } = classifyPermissionSession(event.sessionID);
 
       if (event.tool?.callID && !isChild) {
         const attached = attachPermissionToToolCall(event);
@@ -222,7 +235,7 @@ export function createPermissionActions(set: SessionSet, get: SessionGet) {
         set((state) => ({
           pendingPermissions: [
             ...state.pendingPermissions.filter((e) => e.permission.id !== event.id),
-            { permission: event, childSessionId: isChild ? event.sessionID : null },
+            { permission: event, childSessionId },
           ].slice(-20), // Safety cap
         }));
       }
@@ -406,27 +419,30 @@ export function createPermissionActions(set: SessionSet, get: SessionGet) {
           if (remaining.length === 0) return;
         }
 
-        const match = permissions.find((p) => p.sessionID === activeSessionId) || permissions[0];
+        for (const permission of permissions) {
+          const { isChild, childSessionId } = classifyPermissionSession(permission.sessionID);
 
-        if (match.tool?.callID) {
-          const session = getSessionById(activeSessionId);
-          const alreadyAttached = session?.messages.some((m) =>
-            m.toolCalls?.some((tc) => tc.permission?.id === match.id),
-          );
-          if (!alreadyAttached) {
-            const attached = attachPermissionToToolCall(match);
-            if (!attached) {
-              pendingPermissionBuffer.set(match.tool.callID, match);
+          if (permission.tool?.callID && !isChild) {
+            const session = getSessionById(activeSessionId);
+            const alreadyAttached = session?.messages.some((m) =>
+              m.toolCalls?.some((tc) => tc.permission?.id === permission.id),
+            );
+            if (!alreadyAttached) {
+              const attached = attachPermissionToToolCall(permission);
+              if (!attached) {
+                pendingPermissionBuffer.set(permission.tool.callID, permission);
+              }
             }
+            continue;
           }
-        } else {
+
           const { pendingPermissions } = get();
-          const alreadyPending = pendingPermissions.some((e) => e.permission.id === match.id);
+          const alreadyPending = pendingPermissions.some((e) => e.permission.id === permission.id);
           if (!alreadyPending) {
             set((state) => ({
               pendingPermissions: [
                 ...state.pendingPermissions,
-                { permission: match, childSessionId: null },
+                { permission, childSessionId },
               ].slice(-20),
             }));
           }

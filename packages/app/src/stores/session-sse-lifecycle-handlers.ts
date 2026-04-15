@@ -290,7 +290,11 @@ export function createLifecycleHandlers(set: SessionSet, get: SessionGet) {
         ...(event.status.type === 'retry' ? { attempt: event.status.attempt, message: event.status.message } : {}),
       });
 
-      if (childSessionStreaming[event.sessionId]) {
+      const isKnownChildSession =
+        !!childSessionStreaming[event.sessionId] ||
+        get().sessions.some((session) => session.id === event.sessionId && !!session.parentID);
+
+      if (isKnownChildSession) {
         if (event.status.type === 'idle') {
           const state = get();
           const hasPendingPermission = state.pendingPermissions.some(
