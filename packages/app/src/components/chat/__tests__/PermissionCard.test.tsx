@@ -200,4 +200,29 @@ describe('PendingPermissionInline', () => {
     expect(screen.getByText('3 pending')).toBeTruthy();
     expect(screen.getAllByTestId('pending-permission-backplate')).toHaveLength(2);
   });
+
+  it('renders child-session permissions even when child streaming state is already gone', async () => {
+    sessionState.pendingPermissions = [
+      {
+        permission: {
+          id: 'perm-edit-1',
+          permission: 'edit',
+          patterns: ['notes.md'],
+          metadata: {
+            file: '/workspace/notes.md',
+          },
+        },
+        childSessionId: 'child-sess-edit',
+      },
+    ];
+    streamingState.childSessionStreaming = {};
+
+    const { PendingPermissionInline } = await import('../PermissionCard');
+
+    render(<PendingPermissionInline />);
+
+    expect(screen.getByText('Edit file')).toBeTruthy();
+    expect(screen.getByText('/workspace/notes.md')).toBeTruthy();
+    expect(screen.getByText('Allow')).toBeTruthy();
+  });
 });

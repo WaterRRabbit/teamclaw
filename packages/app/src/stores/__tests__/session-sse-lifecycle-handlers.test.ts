@@ -89,7 +89,7 @@ vi.stubGlobal('document', { ...document, hasFocus: () => true })
 import { createLifecycleHandlers } from '@/stores/session-sse-lifecycle-handlers'
 import { selfCreatedSessionIds, busySessions, debouncedRefreshSessions } from '@/stores/session-internals'
 import { sessionLookupCache } from '@/stores/session-cache'
-import { useStreamingStore } from '@/stores/streaming'
+import { cleanupChildSession, useStreamingStore } from '@/stores/streaming'
 
 describe('session-sse-lifecycle-handlers', () => {
   let state: Record<string, any>
@@ -285,6 +285,39 @@ describe('session-sse-lifecycle-handlers', () => {
         },
       },
     })
+
+    const { cleanupChildSession } = await import('@/stores/streaming')
+
+    handlers.handleSessionStatus({
+      sessionId: 'child-1',
+      status: { type: 'idle' },
+    } as any)
+
+    expect(cleanupChildSession).not.toHaveBeenCalled()
+    expect(state.loadChildSessionMessages).not.toHaveBeenCalled()
+    expect(state.pendingPermissions).toEqual([
+      expect.objectContaining({
+        childSessionId: 'child-1',
+      }),
+    ])
+  })
+
+  it('does not clean up known child session when child streaming state is already gone but permission is pending', async () => {
+    state.sessions = [
+      { id: 'child-1', parentID: 'session-1', messages: [] },
+    ]
+    state.pendingPermissions = [
+      {
+        permission: {
+          id: 'perm-child-2',
+          sessionID: 'child-1',
+          permission: 'edit',
+          patterns: ['notes.md'],
+        },
+        childSessionId: 'child-1',
+      },
+    ]
+    useStreamingStore.setState({ childSessionStreaming: {} })
 
     const { cleanupChildSession } = await import('@/stores/streaming')
 

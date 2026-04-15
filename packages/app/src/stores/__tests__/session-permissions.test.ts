@@ -132,4 +132,109 @@ describe('createPermissionActions', () => {
     expect(store.pendingPermissions).toHaveLength(2)
     expect(store.pendingPermissions.map((e) => e.permission.id)).toEqual(['perm-1', 'perm-2'])
   })
+
+  it('queues child-session tool permissions even when the child session already exists locally', async () => {
+    const { createPermissionActions } = await import('@/stores/session-permissions')
+    const { getSessionById } = await import('@/stores/session-cache')
+    vi.mocked(getSessionById).mockImplementation((sessionId: string) => (
+      sessionId === 'parent-1'
+        ? ({ id: 'parent-1', title: 'Parent', messages: [] } as any)
+        : sessionId === 'child-1'
+          ? ({ id: 'child-1', title: 'Child', parentID: 'parent-1', messages: [] } as any)
+          : null
+    ))
+
+    const store = {
+      activeSessionId: 'parent-1',
+      sessions: [
+        { id: 'parent-1', title: 'Parent', messages: [] },
+        { id: 'child-1', title: 'Child', parentID: 'parent-1', messages: [] },
+      ],
+      pendingPermissions: [] as Array<{ permission: { id: string }; childSessionId: string | null }>,
+      setActiveSession: vi.fn(),
+    }
+    const set = vi.fn((fn: unknown) => {
+      if (typeof fn === 'function') {
+        Object.assign(store, (fn as (s: typeof store) => Partial<typeof store>)(store))
+      } else {
+        Object.assign(store, fn)
+      }
+    })
+    const get = vi.fn(() => store)
+    const actions = createPermissionActions(set as any, get as any)
+
+    await actions.handlePermissionAsked({
+      id: 'perm-child-1',
+      sessionID: 'child-1',
+      permission: 'edit',
+      patterns: ['notes.md'],
+      tool: {
+        messageID: 'msg-1',
+        callID: 'tool-1',
+      },
+    } as any)
+
+    expect(store.pendingPermissions).toHaveLength(1)
+    expect(store.pendingPermissions[0]).toMatchObject({
+      childSessionId: 'child-1',
+      permission: { id: 'perm-child-1' },
+    })
+  })
+
+  it('pollPermissions queues all outstanding child permissions instead of only the first one', async () => {
+    const { createPermissionActions } = await import('@/stores/session-permissions')
+    const { getSessionById } = await import('@/stores/session-cache')
+    vi.mocked(getSessionById).mockImplementation((sessionId: string) => (
+      sessionId === 'parent-1'
+        ? ({ id: 'parent-1', title: 'Parent', messages: [] } as any)
+        : sessionId === 'child-1'
+          ? ({ id: 'child-1', title: 'Child', parentID: 'parent-1', messages: [] } as any)
+          : sessionId === 'child-2'
+            ? ({ id: 'child-2', title: 'Child 2', parentID: 'parent-1', messages: [] } as any)
+            : null
+    ))
+    mockListPermissions.mockResolvedValue([
+      {
+        id: 'perm-child-1',
+        sessionID: 'child-1',
+        permission: 'edit',
+        patterns: ['a.md'],
+        tool: { messageID: 'msg-1', callID: 'tool-1' },
+      },
+      {
+        id: 'perm-child-2',
+        sessionID: 'child-2',
+        permission: 'write',
+        patterns: ['b.md'],
+        tool: { messageID: 'msg-2', callID: 'tool-2' },
+      },
+    ])
+
+    const store = {
+      activeSessionId: 'parent-1',
+      sessions: [
+        { id: 'parent-1', title: 'Parent', messages: [] },
+        { id: 'child-1', title: 'Child', parentID: 'parent-1', messages: [] },
+        { id: 'child-2', title: 'Child 2', parentID: 'parent-1', messages: [] },
+      ],
+      pendingPermissions: [] as Array<{ permission: { id: string }; childSessionId: string | null }>,
+      setActiveSession: vi.fn(),
+    }
+    const set = vi.fn((fn: unknown) => {
+      if (typeof fn === 'function') {
+        Object.assign(store, (fn as (s: typeof store) => Partial<typeof store>)(store))
+      } else {
+        Object.assign(store, fn)
+      }
+    })
+    const get = vi.fn(() => store)
+    const actions = createPermissionActions(set as any, get as any)
+
+    await actions.pollPermissions()
+
+    expect(store.pendingPermissions.map((entry) => entry.permission.id)).toEqual([
+      'perm-child-1',
+      'perm-child-2',
+    ])
+  })
 })
