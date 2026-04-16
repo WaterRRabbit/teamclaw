@@ -23,6 +23,9 @@ pub struct TeamConfig {
     /// Git branch to sync (e.g. "main", "master", "dev"). If None, auto-detect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_branch: Option<String>,
+    /// Team ID for shared secrets (generated on create, provided on join)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
 }
 
 /// A single model entry in the team LLM configuration.
@@ -64,6 +67,39 @@ pub struct TeamStatus {
 pub struct TeamGitResult {
     pub success: bool,
     pub message: String,
+}
+
+/// Team metadata stored in _meta/team.json (committed to Git)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamMeta {
+    pub team_id: String,
+    pub team_name: String,
+    /// HMAC-SHA256(team_secret, "teamclaw-verify") as hex — for join verification
+    pub secret_verify: String,
+    pub created_at: String,
+    pub owner_node_id: String,
+}
+
+/// Result of team git create
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamGitCreateResult {
+    pub team_id: String,
+    pub team_secret: String,
+}
+
+/// Compute HMAC-SHA256(secret_hex, "teamclaw-verify") and return hex string.
+fn compute_secret_verify(team_secret: &str) -> Result<String, String> {
+    use hmac::{Hmac, Mac};
+    type HmacSha256 = Hmac<sha2::Sha256>;
+
+    let secret_bytes =
+        hex::decode(team_secret).map_err(|e| format!("Invalid hex secret: {e}"))?;
+    let mut mac = HmacSha256::new_from_slice(&secret_bytes)
+        .map_err(|e| format!("HMAC init failed: {e}"))?;
+    mac.update(b"teamclaw-verify");
+    Ok(hex::encode(mac.finalize().into_bytes()))
 }
 
 /// Result of git availability check
@@ -241,7 +277,7 @@ pub fn scaffold_team_dir(team_dir: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    let dirs = ["skills", ".mcp", "knowledge", "_feedback", "_meta"];
+    let dirs = ["skills", ".mcp", "knowledge", "_feedback", "_meta", "_secrets"];
     for d in &dirs {
         std::fs::create_dir_all(team_path.join(d))
             .map_err(|e| format!("Failed to create {}: {}", d, e))?;
@@ -481,6 +517,8 @@ const GITIGNORE_CONTENT: &str = r#"# ===========================================
 !_feedback/**
 !_meta/
 !_meta/**
+!_secrets/
+!_secrets/**
 
 # 3. Allow workspace config
 !.gitignore
@@ -849,6 +887,429 @@ pub async fn team_init_repo(
     })
 }
 
+/// 1.3b - Create a new team: clone repo, generate team_id + team_secret, scaffold, commit & push.
+#[tauri::command]
+pub async fn team_git_create(
+    git_url: String,
+    git_token: Option<String>,
+    git_branch: Option<String>,
+    team_name: String,
+    member_name: String,
+    llm_base_url: Option<String>,
+    llm_model: Option<String>,
+    llm_model_name: Option<String>,
+    llm_models: Option<String>,
+    opencode_state: State<'_, OpenCodeState>,
+    secrets_state: State<'_, crate::commands::shared_secrets::SharedSecretsState>,
+) -> Result<TeamGitCreateResult, String> {
+    let workspace_path = get_workspace_path(&opencode_state)?;
+    let team_dir = get_team_repo_path(&workspace_path);
+
+    if Path::new(&team_dir).exists() {
+        return Err(format!(
+            "{} already exists. Remove it first or disconnect the team repo to re-initialize.",
+            TEAM_REPO_DIR
+        ));
+    }
+
+    // Build the remote URL: embed token for HTTPS URLs
+    let remote_url = match &git_token {
+        Some(token) if !token.is_empty() && is_https_url(&git_url) => {
+            embed_token_in_url(&git_url, token)
+        }
+        _ => git_url.clone(),
+    };
+
+    // Clone into workspace/teamclaw-team, optionally specifying a branch
+    let clone_args: Vec<&str> = if let Some(ref branch) = git_branch {
+        if !branch.is_empty() {
+            vec!["clone", "-b", branch.as_str(), &remote_url, TEAM_REPO_DIR]
+        } else {
+            vec!["clone", &remote_url, TEAM_REPO_DIR]
+        }
+    } else {
+        vec!["clone", &remote_url, TEAM_REPO_DIR]
+    };
+    let (ok, _, stderr) = run_git(&clone_args, &workspace_path)?;
+    if !ok {
+        let _ = std::fs::remove_dir_all(&team_dir);
+        return Err(format!(
+            "git clone failed (check URL and authentication): {}",
+            stderr.trim()
+        ));
+    }
+
+    // Generate team_id
+    let team_id = format!("tc-{}", nanoid::nanoid!(12));
+
+    // Generate team_secret (32 random bytes → hex)
+    let mut secret_bytes = [0u8; 32];
+    getrandom::getrandom(&mut secret_bytes)
+        .map_err(|e| format!("Failed to generate random secret: {e}"))?;
+    let team_secret = hex::encode(secret_bytes);
+
+    // Scaffold standard team directories
+    let team_path = Path::new(&team_dir);
+    for d in &["skills", ".mcp", "knowledge", "_feedback", "_meta", "_secrets"] {
+        std::fs::create_dir_all(team_path.join(d))
+            .map_err(|e| format!("Failed to create {}: {}", d, e))?;
+    }
+
+    // Write README.md if missing
+    let readme_path = team_path.join("README.md");
+    if !readme_path.exists() {
+        let readme = "# TeamClaw Team Drive\n\nShared team resources.\n\n## Structure\n\n- `skills/` - Shared agent skills\n- `.mcp/` - MCP server configurations\n- `knowledge/` - Shared knowledge base\n- `_feedback/` - Member feedback summaries (auto-synced)\n- `_meta/` - Shared team metadata and app-managed files\n";
+        let _ = std::fs::write(&readme_path, readme);
+    }
+
+    // Compute HMAC verification hash
+    let secret_verify = compute_secret_verify(&team_secret)?;
+
+    // Get device node_id
+    let node_id = crate::commands::oss_commands::get_device_id()?;
+
+    // Write _meta/team.json
+    let team_meta = TeamMeta {
+        team_id: team_id.clone(),
+        team_name: team_name.clone(),
+        secret_verify,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        owner_node_id: node_id.clone(),
+    };
+    let team_meta_path = team_path.join("_meta").join("team.json");
+    let team_meta_json = serde_json::to_string_pretty(&team_meta)
+        .map_err(|e| format!("Failed to serialize team.json: {}", e))?;
+    std::fs::write(&team_meta_path, team_meta_json)
+        .map_err(|e| format!("Failed to write team.json: {}", e))?;
+    println!("[Team Create] Wrote _meta/team.json with team_id={}", team_id);
+
+    // Write _meta/members.json with self as owner
+    {
+        use crate::commands::team_unified::{MemberRole, TeamManifest, TeamMember};
+        let manifest = TeamManifest {
+            owner_node_id: node_id.clone(),
+            members: vec![TeamMember {
+                node_id: node_id.clone(),
+                name: member_name,
+                role: MemberRole::Owner,
+                label: String::new(),
+                platform: std::env::consts::OS.to_string(),
+                arch: std::env::consts::ARCH.to_string(),
+                hostname: gethostname::gethostname().to_string_lossy().to_string(),
+                added_at: chrono::Utc::now().to_rfc3339(),
+            }],
+        };
+        let meta_path = team_path.join("_meta").join("members.json");
+        let json = serde_json::to_string_pretty(&manifest)
+            .map_err(|e| format!("Failed to serialize members.json: {}", e))?;
+        std::fs::write(&meta_path, json)
+            .map_err(|e| format!("Failed to write members.json: {}", e))?;
+        println!("[Team Create] Created _meta/members.json with self as owner");
+    }
+
+    // Ensure .gitignore has all required rules
+    ensure_gitignore_rules(&team_dir);
+
+    // Git add, commit, push
+    let (ok, _, stderr) = run_git(&["add", "-A"], &team_dir)?;
+    if !ok {
+        println!("[Team Create] git add warning: {}", stderr.trim());
+    }
+    let (ok, _, stderr) = run_git(&["commit", "-m", "chore: initialize team"], &team_dir)?;
+    if !ok {
+        println!("[Team Create] git commit warning: {}", stderr.trim());
+    }
+    let branch = git_branch
+        .as_deref()
+        .filter(|b| !b.is_empty())
+        .unwrap_or("main");
+    let (ok, _, stderr) = run_git(&["push", "origin", branch], &team_dir)?;
+    if !ok {
+        // Try pushing to current HEAD branch if specified branch fails
+        let (ok2, head_out, _) =
+            run_git(&["rev-parse", "--abbrev-ref", "HEAD"], &team_dir)?;
+        if ok2 {
+            let head_branch = head_out.trim();
+            if head_branch != branch {
+                let (ok3, _, stderr3) =
+                    run_git(&["push", "origin", head_branch], &team_dir)?;
+                if !ok3 {
+                    println!(
+                        "[Team Create] git push warning: {}",
+                        stderr3.trim()
+                    );
+                }
+            } else {
+                println!("[Team Create] git push warning: {}", stderr.trim());
+            }
+        }
+    }
+
+    // Write LLM config to .teamclaw/teamclaw.json
+    let llm_config = build_llm_config(llm_base_url, llm_model, llm_model_name, llm_models);
+    write_llm_config(&workspace_path, llm_config.as_ref())?;
+    println!(
+        "[Team Create] Wrote LLM config to {}/{}",
+        super::TEAMCLAW_DIR,
+        super::CONFIG_FILE_NAME
+    );
+
+    // Save team_secret to keychain
+    crate::commands::oss_sync::save_team_secret(&workspace_path, &team_id, &team_secret)?;
+    println!("[Team Create] Saved team_secret to keychain");
+
+    // Init shared secrets
+    crate::commands::shared_secrets::init_shared_secrets(
+        &secrets_state,
+        &team_secret,
+        team_path,
+    )?;
+    println!("[Team Create] Initialized shared secrets");
+
+    // Sync MCP configs
+    match sync_team_mcp_configs_from_dir(&team_dir, &workspace_path) {
+        Ok(count) if count > 0 => {
+            println!(
+                "[Team Create] Synced {} MCP server(s) from .mcp/ to opencode.json",
+                count
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            println!("[Team Create] Warning: Failed to sync MCP configs: {}", e);
+        }
+    }
+
+    Ok(TeamGitCreateResult {
+        team_id,
+        team_secret,
+    })
+}
+
+/// Join an existing team repo: clone, verify HMAC secret, add self as member.
+#[tauri::command]
+pub async fn team_git_join(
+    git_url: String,
+    git_token: Option<String>,
+    git_branch: Option<String>,
+    team_id: String,
+    team_secret: String,
+    member_name: String,
+    llm_base_url: Option<String>,
+    llm_model: Option<String>,
+    llm_model_name: Option<String>,
+    llm_models: Option<String>,
+    opencode_state: State<'_, OpenCodeState>,
+    secrets_state: State<'_, crate::commands::shared_secrets::SharedSecretsState>,
+) -> Result<TeamGitResult, String> {
+    let workspace_path = get_workspace_path(&opencode_state)?;
+    let team_dir = get_team_repo_path(&workspace_path);
+
+    // 1. Validate team_dir doesn't exist
+    if Path::new(&team_dir).exists() {
+        return Err(format!(
+            "{} already exists. Remove it first or disconnect the team repo to re-initialize.",
+            TEAM_REPO_DIR
+        ));
+    }
+
+    // 2. Clone repo (same pattern as team_git_create)
+    let remote_url = match &git_token {
+        Some(token) if !token.is_empty() && is_https_url(&git_url) => {
+            embed_token_in_url(&git_url, token)
+        }
+        _ => git_url.clone(),
+    };
+
+    let clone_args: Vec<&str> = if let Some(ref branch) = git_branch {
+        if !branch.is_empty() {
+            vec!["clone", "-b", branch.as_str(), &remote_url, TEAM_REPO_DIR]
+        } else {
+            vec!["clone", &remote_url, TEAM_REPO_DIR]
+        }
+    } else {
+        vec!["clone", &remote_url, TEAM_REPO_DIR]
+    };
+    let (ok, _, stderr) = run_git(&clone_args, &workspace_path)?;
+    if !ok {
+        let _ = std::fs::remove_dir_all(&team_dir);
+        return Err(format!(
+            "git clone failed (check URL and authentication): {}",
+            stderr.trim()
+        ));
+    }
+
+    // 3. Read _meta/team.json
+    let team_path = Path::new(&team_dir);
+    let team_meta_path = team_path.join("_meta").join("team.json");
+    let team_meta: TeamMeta = match std::fs::read_to_string(&team_meta_path) {
+        Ok(content) => serde_json::from_str(&content).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&team_dir);
+            format!("Failed to parse _meta/team.json: {}", e)
+        })?,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&team_dir);
+            return Err(format!(
+                "Failed to read _meta/team.json: {}. Is this a valid TeamClaw team repo?",
+                e
+            ));
+        }
+    };
+
+    // 4. Verify team_id matches
+    if team_meta.team_id != team_id {
+        let _ = std::fs::remove_dir_all(&team_dir);
+        return Err(format!(
+            "Team ID mismatch: expected '{}' but repo has '{}'",
+            team_id, team_meta.team_id
+        ));
+    }
+
+    // 5. Verify team_secret via HMAC comparison
+    let computed_verify = match compute_secret_verify(&team_secret) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&team_dir);
+            return Err(e);
+        }
+    };
+    if computed_verify != team_meta.secret_verify {
+        let _ = std::fs::remove_dir_all(&team_dir);
+        return Err("Team Secret is incorrect".to_string());
+    }
+
+    // 6. Read _meta/members.json
+    let members_path = team_path.join("_meta").join("members.json");
+    let mut manifest: crate::commands::team_unified::TeamManifest = {
+        let content = match std::fs::read_to_string(&members_path) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&team_dir);
+                return Err(format!("Failed to read _meta/members.json: {}", e));
+            }
+        };
+        match serde_json::from_str(&content) {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&team_dir);
+                return Err(format!("Failed to parse _meta/members.json: {}", e));
+            }
+        }
+    };
+
+    // 7. Dedup: update existing member or add new
+    let node_id = match crate::commands::oss_commands::get_device_id() {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&team_dir);
+            return Err(e);
+        }
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Some(existing) = manifest.members.iter_mut().find(|m| m.node_id == node_id) {
+        existing.name = member_name.clone();
+        existing.platform = std::env::consts::OS.to_string();
+        existing.arch = std::env::consts::ARCH.to_string();
+        existing.hostname = gethostname::gethostname().to_string_lossy().to_string();
+    } else {
+        use crate::commands::team_unified::{MemberRole, TeamMember};
+        manifest.members.push(TeamMember {
+            node_id: node_id.clone(),
+            name: member_name.clone(),
+            role: MemberRole::Editor,
+            label: String::new(),
+            platform: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+            hostname: gethostname::gethostname().to_string_lossy().to_string(),
+            added_at: now,
+        });
+    }
+
+    // 8. Write updated members.json
+    let members_json = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| {
+            let _ = std::fs::remove_dir_all(&team_dir);
+            format!("Failed to serialize members.json: {}", e)
+        })?;
+    if let Err(e) = std::fs::write(&members_path, members_json) {
+        let _ = std::fs::remove_dir_all(&team_dir);
+        return Err(format!("Failed to write members.json: {}", e));
+    }
+
+    // 9. Git add, commit, push
+    let (ok, _, stderr) = run_git(&["add", "-A"], &team_dir)?;
+    if !ok {
+        println!("[Team Join] git add warning: {}", stderr.trim());
+    }
+    let (ok, _, stderr) =
+        run_git(&["commit", "-m", "chore: member joined team"], &team_dir)?;
+    if !ok {
+        println!("[Team Join] git commit warning: {}", stderr.trim());
+    }
+    let branch = git_branch
+        .as_deref()
+        .filter(|b| !b.is_empty())
+        .unwrap_or("main");
+    let (ok, _, stderr) = run_git(&["push", "origin", branch], &team_dir)?;
+    if !ok {
+        let (ok2, head_out, _) =
+            run_git(&["rev-parse", "--abbrev-ref", "HEAD"], &team_dir)?;
+        if ok2 {
+            let head_branch = head_out.trim();
+            if head_branch != branch {
+                let (ok3, _, stderr3) =
+                    run_git(&["push", "origin", head_branch], &team_dir)?;
+                if !ok3 {
+                    println!("[Team Join] git push warning: {}", stderr3.trim());
+                }
+            } else {
+                println!("[Team Join] git push warning: {}", stderr.trim());
+            }
+        }
+    }
+
+    // 10. Write LLM config
+    let llm_config = build_llm_config(llm_base_url, llm_model, llm_model_name, llm_models);
+    write_llm_config(&workspace_path, llm_config.as_ref())?;
+    println!(
+        "[Team Join] Wrote LLM config to {}/{}",
+        super::TEAMCLAW_DIR,
+        super::CONFIG_FILE_NAME
+    );
+
+    // 11. Save team_secret to keychain
+    crate::commands::oss_sync::save_team_secret(&workspace_path, &team_id, &team_secret)?;
+    println!("[Team Join] Saved team_secret to keychain");
+
+    // 12. Init shared secrets
+    crate::commands::shared_secrets::init_shared_secrets(
+        &secrets_state,
+        &team_secret,
+        team_path,
+    )?;
+    println!("[Team Join] Initialized shared secrets");
+
+    // 13. Sync MCP configs
+    match sync_team_mcp_configs_from_dir(&team_dir, &workspace_path) {
+        Ok(count) if count > 0 => {
+            println!(
+                "[Team Join] Synced {} MCP server(s) from .mcp/ to opencode.json",
+                count
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            println!("[Team Join] Warning: Failed to sync MCP configs: {}", e);
+        }
+    }
+
+    // 14. Return success
+    Ok(TeamGitResult {
+        success: true,
+        message: format!("Joined team '{}' successfully", team_meta.team_name),
+    })
+}
+
 /// 1.4 - Ensure .gitignore in team repo dir has all required rules.
 /// Creates the file if missing, or appends missing rules if it already exists.
 #[tauri::command]
@@ -868,6 +1329,7 @@ pub async fn team_generate_gitignore(
 #[tauri::command]
 pub async fn team_sync_repo(
     opencode_state: State<'_, OpenCodeState>,
+    secrets_state: State<'_, crate::commands::shared_secrets::SharedSecretsState>,
 ) -> Result<TeamGitResult, String> {
     let workspace_path = get_workspace_path(&opencode_state)?;
     let team_dir = get_team_repo_path(&workspace_path);
@@ -1026,6 +1488,11 @@ pub async fn team_sync_repo(
         }
     };
 
+    // Reload shared secrets from disk (other members may have added/updated secrets)
+    if let Err(e) = crate::commands::shared_secrets::load_all_secrets(&secrets_state) {
+        println!("[Team Sync] Warning: Failed to reload shared secrets: {}", e);
+    }
+
     let sync_detail = if conflict_resolved {
         format!("Synced with origin/{} (conflict resolved, local backup in .trash/){}", branch, mcp_msg)
     } else if had_local_changes {
@@ -1061,6 +1528,35 @@ pub async fn team_disconnect_repo(
         success: true,
         message: "Team repository disconnected".to_string(),
     })
+}
+
+/// Initialize shared secrets for an already-configured Git team.
+/// Called on app startup when team config has a team_id.
+#[tauri::command]
+pub async fn init_git_team_secrets(
+    team_id: String,
+    opencode_state: State<'_, OpenCodeState>,
+    secrets_state: State<'_, crate::commands::shared_secrets::SharedSecretsState>,
+) -> Result<(), String> {
+    let workspace_path = get_workspace_path(&opencode_state)?;
+    let team_dir = get_team_repo_path(&workspace_path);
+    let team_path = Path::new(&team_dir);
+
+    if !team_path.join("_meta").join("team.json").exists() {
+        return Ok(()); // No team metadata yet, skip
+    }
+
+    let team_secret =
+        crate::commands::oss_sync::load_team_secret(&workspace_path, &team_id)
+            .map_err(|e| format!("Failed to load team secret: {e}"))?;
+
+    crate::commands::shared_secrets::init_shared_secrets(
+        &secrets_state,
+        &team_secret,
+        team_path,
+    )?;
+
+    Ok(())
 }
 
 // ─── Tauri Commands: Config Management ──────────────────────────────────────
